@@ -1,0 +1,77 @@
+{
+  "name": "stock-watcher-widget",
+  "version": "1.0.0",
+  "description": "股票观察器桌面小组件",
+  "author": "xuniwodecong",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "npm run build:renderer && electron .",
+    "dev": "npm run start",
+    "build:renderer": "node scripts/build-renderer.js",
+    "dist:win": "npm run build:renderer && electron-builder --win nsis",
+    "dist:mac": "npm run build:renderer && electron-builder --mac",
+    "dist": "npm run dist:win"
+  },
+  "build": {
+    "appId": "com.trae.stockwatcher",
+    "productName": "牛来",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "牛来"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "category": "public.app-category.finance"
+    }
+  },
+  "dependencies": {
+    "iconv-lite": "0.6.3",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  },
+  "devDependencies": {
+    "electron": "22.3.27",
+    "electron-builder": "23.6.0",
+    "esbuild": "0.17.19"
+  }
+}

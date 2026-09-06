@@ -1,0 +1,5 @@
+node_modules/
+release/
+
+# 打包时下载的二进制缓存（改用独立目录，避免污染 %LOCALAPPDATA%）
+.cache/
