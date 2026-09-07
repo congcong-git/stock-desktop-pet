@@ -267,6 +267,9 @@ function App() {
   });
   const [isTradingDay, setIsTradingDay] = useState(true);
   const [dataNotices, setDataNotices] = useState([]);
+  const [appConfig, setAppConfig] = useState(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideAutoLaunch, setGuideAutoLaunch] = useState(false);
   const timerRef = useRef(null);
   const marketStateRef = useRef(marketState);
 
@@ -291,6 +294,13 @@ function App() {
       ...current,
       today: bootstrap.todaySnapshot || { date: "", morning: null, afternoon: null }
     }));
+
+    const config = bootstrap.appConfig || null;
+    setAppConfig(config);
+    if (config && !config.guideSeen) {
+      setGuideOpen(true);
+      setGuideAutoLaunch(config.autoLaunchEnabled === true);
+    }
   }
 
   async function loadSnapshots() {
@@ -472,6 +482,19 @@ function App() {
       await refreshMarket(false);
     } catch (error) {
       setStatusMessage(`移除自选股失败：${error.message}`);
+    }
+  }
+
+  async function closeGuide() {
+    setGuideOpen(false);
+    try {
+      if (guideAutoLaunch && appConfig && appConfig.autoLaunchEnabled !== guideAutoLaunch) {
+        await window.stockWatcher.setAutoLaunch(true);
+      }
+      await window.stockWatcher.setGuideSeen();
+      setAppConfig(await window.stockWatcher.getAppConfig());
+    } catch (error) {
+      setStatusMessage(`引导设置保存失败：${error.message}`);
     }
   }
 
@@ -852,6 +875,42 @@ function App() {
               </button>
               <button className="primary-btn" onClick={handleSaveHolding}>
                 保存
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {guideOpen ? (
+        <div className="modal-backdrop">
+          <div className="modal guide-modal">
+            <h3>欢迎使用「牛来」</h3>
+            <div className="guide-list">
+              <p>
+                <b>1. 右键宠物</b>：切换底部胶囊显示内容、更换形象、打开管理面板。
+              </p>
+              <p>
+                <b>2. 宠物素材库</b>：右键 → 宠物外观 → 打开素材库管理，可导入 / 试穿 / 去背景。
+              </p>
+              <p>
+                <b>3. 找不到窗口时</b>：点 Windows 右下角托盘的牛头图标即可唤回。
+              </p>
+            </div>
+            {appConfig && appConfig.autoLaunchSupported ? (
+              <div className="guide-checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={guideAutoLaunch}
+                    onChange={(event) => setGuideAutoLaunch(event.target.checked)}
+                  />
+                  开机自动启动（可在右键菜单「设置」中随时调整）
+                </label>
+              </div>
+            ) : null}
+            <div className="modal-actions">
+              <button className="primary-btn" onClick={closeGuide}>
+                知道了
               </button>
             </div>
           </div>

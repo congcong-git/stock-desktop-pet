@@ -11,6 +11,15 @@ contextBridge.exposeInMainWorld("stockWatcher", {
   refreshMarket: () => ipcRenderer.invoke("market:refresh"),
   getSnapshots: () => ipcRenderer.invoke("snapshot:get"),
   openDataDir: () => ipcRenderer.invoke("data:open-dir"),
+  getAppConfig: () => ipcRenderer.invoke("app:get-config"),
+  setAutoLaunch: (enabled) => ipcRenderer.invoke("app:set-auto-launch", enabled),
+  setGuideSeen: () => ipcRenderer.invoke("app:set-guide-seen"),
+  checkForUpdates: () => ipcRenderer.invoke("app:check-updates"),
+  onAppConfigChanged: (callback) => {
+    const listener = (_event, config) => callback(config);
+    ipcRenderer.on("app:config-changed", listener);
+    return () => ipcRenderer.removeListener("app:config-changed", listener);
+  },
   openPetMenu: (state) => ipcRenderer.send("pet:open-menu", state),
   onSetPetMood: (callback) => {
     const listener = (_event, mood) => callback(mood);

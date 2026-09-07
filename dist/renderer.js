@@ -24633,6 +24633,9 @@
     });
     const [isTradingDay, setIsTradingDay] = (0, import_react.useState)(true);
     const [dataNotices, setDataNotices] = (0, import_react.useState)([]);
+    const [appConfig, setAppConfig] = (0, import_react.useState)(null);
+    const [guideOpen, setGuideOpen] = (0, import_react.useState)(false);
+    const [guideAutoLaunch, setGuideAutoLaunch] = (0, import_react.useState)(false);
     const timerRef = (0, import_react.useRef)(null);
     const marketStateRef = (0, import_react.useRef)(marketState);
     marketStateRef.current = marketState;
@@ -24653,6 +24656,12 @@
         ...current,
         today: bootstrap.todaySnapshot || { date: "", morning: null, afternoon: null }
       }));
+      const config = bootstrap.appConfig || null;
+      setAppConfig(config);
+      if (config && !config.guideSeen) {
+        setGuideOpen(true);
+        setGuideAutoLaunch(config.autoLaunchEnabled === true);
+      }
     }
     async function loadSnapshots() {
       try {
@@ -24814,6 +24823,18 @@
         await refreshMarket(false);
       } catch (error) {
         setStatusMessage(`\u79FB\u9664\u81EA\u9009\u80A1\u5931\u8D25\uFF1A${error.message}`);
+      }
+    }
+    async function closeGuide() {
+      setGuideOpen(false);
+      try {
+        if (guideAutoLaunch && appConfig && appConfig.autoLaunchEnabled !== guideAutoLaunch) {
+          await window.stockWatcher.setAutoLaunch(true);
+        }
+        await window.stockWatcher.setGuideSeen();
+        setAppConfig(await window.stockWatcher.getAppConfig());
+      } catch (error) {
+        setStatusMessage(`\u5F15\u5BFC\u8BBE\u7F6E\u4FDD\u5B58\u5931\u8D25\uFF1A${error.message}`);
       }
     }
     async function handleRemoveHolding(row) {
@@ -25092,6 +25113,35 @@
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ghost-btn", onClick: closeHoldingModal, children: "\u53D6\u6D88" }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "primary-btn", onClick: handleSaveHolding, children: "\u4FDD\u5B58" })
         ] })
+      ] }) }) : null,
+      guideOpen ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "modal-backdrop", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "modal guide-modal", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: "\u6B22\u8FCE\u4F7F\u7528\u300C\u725B\u6765\u300D" }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "guide-list", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "1. \u53F3\u952E\u5BA0\u7269" }),
+            "\uFF1A\u5207\u6362\u5E95\u90E8\u80F6\u56CA\u663E\u793A\u5185\u5BB9\u3001\u66F4\u6362\u5F62\u8C61\u3001\u6253\u5F00\u7BA1\u7406\u9762\u677F\u3002"
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "2. \u5BA0\u7269\u7D20\u6750\u5E93" }),
+            "\uFF1A\u53F3\u952E \u2192 \u5BA0\u7269\u5916\u89C2 \u2192 \u6253\u5F00\u7D20\u6750\u5E93\u7BA1\u7406\uFF0C\u53EF\u5BFC\u5165 / \u8BD5\u7A7F / \u53BB\u80CC\u666F\u3002"
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: "3. \u627E\u4E0D\u5230\u7A97\u53E3\u65F6" }),
+            "\uFF1A\u70B9 Windows \u53F3\u4E0B\u89D2\u6258\u76D8\u7684\u725B\u5934\u56FE\u6807\u5373\u53EF\u5524\u56DE\u3002"
+          ] })
+        ] }),
+        appConfig && appConfig.autoLaunchSupported ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "guide-checkbox", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            "input",
+            {
+              type: "checkbox",
+              checked: guideAutoLaunch,
+              onChange: (event) => setGuideAutoLaunch(event.target.checked)
+            }
+          ),
+          "\u5F00\u673A\u81EA\u52A8\u542F\u52A8\uFF08\u53EF\u5728\u53F3\u952E\u83DC\u5355\u300C\u8BBE\u7F6E\u300D\u4E2D\u968F\u65F6\u8C03\u6574\uFF09"
+        ] }) }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "modal-actions", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "primary-btn", onClick: closeGuide, children: "\u77E5\u9053\u4E86" }) })
       ] }) }) : null
     ] });
   }

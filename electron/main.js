@@ -6,6 +6,7 @@ const https = require("https");
 const http = require("http");
 const zlib = require("zlib");
 const iconv = require("iconv-lite");
+const { autoUpdater } = require("electron-updater");
 
 // 与 package.json build.appId 保持一致：修复 Windows 任务栏按钮分组丢失
 app.setAppUserModelId("com.trae.stockwatcher");
@@ -76,6 +77,68 @@ function ensureRuntimeAssets() {
     fs.writeFileSync(tagFile, RUNTIME_ASSETS_TAG);
   }
   return destRoot;
+}
+
+// —— 应用设置（P0：开机自启 / 自动更新 / 首次引导）——
+const APP_CONFIG_FILE = "app-config.json";
+const DEFAULT_APP_CONFIG = { autoLaunch: false, updateCheck: true, guideSeen: false };
+
+function readAppConfig() {
+  const raw = readJson(APP_CONFIG_FILE, {});
+  return {
+    autoLaunch: raw.autoLaunch === true,
+    updateCheck: raw.updateCheck !== false,
+    guideSeen: raw.guideSeen === true
+  };
+}
+
+function writeAppConfig(next) {
+  const merged = { ...readAppConfig(), ...next };
+  writeJson(APP_CONFIG_FILE, merged);
+  broadcastAppConfig(merged);
+  return merged;
+}
+
+function buildAppConfigPayload() {
+  return {
+    ...readAppConfig(),
+    autoLaunchEnabled: getAutoLaunchState(),
+    autoLaunchSupported: app.isPackaged,
+    version: app.getVersion()
+  };
+}
+
+function broadcastAppConfig() {
+  const payload = buildAppConfigPayload();
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window && !window.isDestroyed()) {
+      window.webContents.send("app:config-changed", payload);
+    }
+  }
+  return payload;
+}
+
+/** 开机自启：仅安装版写注册表，开发模式直接读配置（避免指向 electron.exe） */
+function getAutoLaunchState() {
+  if (!app.isPackaged) {
+    return readAppConfig().autoLaunch;
+  }
+  return app.getLoginItemSettings().openAtLogin === true;
+}
+
+function setAutoLaunch(enabled) {
+  const next = writeAppConfig({ autoLaunch: !!enabled });
+  if (app.isPackaged) {
+    app.setLoginItemSettings({ openAtLogin: !!enabled });
+  }
+  return broadcastAppConfig(next);
+}
+
+/** 启动时同步一次自启状态：配置开启但注册表缺失时补写 */
+function syncAutoLaunchOnStart() {
+  if (app.isPackaged && readAppConfig().autoLaunch) {
+    app.setLoginItemSettings({ openAtLogin: true });
+  }
 }
 
 /** 依据扩展名判断素材类型：image / video / null（不支持） */
@@ -1072,21 +1135,32 @@ function createTray() {
   const icon = nativeImage.createFromPath(iconPath);
   tray = new Tray(icon);
   tray.setToolTip("牛来 · 股票桌面宠物");
-  const menu = Menu.buildFromTemplate([
-    { label: "牛来 · 股票桌面宠物", enabled: false },
-    { type: "separator" },
-    { label: "打开管理面板", click: focusPanelWindow },
-    { label: "打开宠物素材库", click: () => createMediaWindow() },
-    { label: "桌宠回到屏幕右下角", click: resetPetToCorner },
-    { type: "separator" },
-    { label: "打开数据目录", click: () => shell.openPath(getDataDir()) },
-    { type: "separator" },
-    { label: "退出", click: () => app.quit() }
-  ]);
+  // 每次弹出时重建，保证「开机自启」勾选状态与实际一致
+  const buildMenu = () =>
+    Menu.buildFromTemplate([
+      { label: "牛来 · 股票桌面宠物", enabled: false },
+      { type: "separator" },
+      { label: "打开管理面板", click: focusPanelWindow },
+      { label: "打开宠物素材库", click: () => createMediaWindow() },
+      { label: "桌宠回到屏幕右下角", click: resetPetToCorner },
+      { type: "separator" },
+      {
+        label: "开机自启",
+        type: "checkbox",
+        checked: getAutoLaunchState(),
+        click: (item) => setAutoLaunch(item.checked)
+      },
+      { label: "检查更新…", click: checkForUpdatesManual },
+      { type: "separator" },
+      { label: "打开数据目录", click: () => shell.openPath(getDataDir()) },
+      { type: "separator" },
+      { label: "退出", click: () => app.quit() }
+    ]);
+
   tray.on("click", focusPanelWindow);
   tray.on("double-click", focusPanelWindow);
   tray.on("right-click", () => {
-    menu.popup({});
+    buildMenu().popup({});
   });
 }
 
@@ -1437,6 +1511,19 @@ ipcMain.on("pet:open-menu", (event, state) => {
       ]
     },
     { type: "separator" },
+    {
+      label: "设置",
+      submenu: [
+        {
+          label: "开机自启",
+          type: "checkbox",
+          checked: getAutoLaunchState(),
+          click: (item) => setAutoLaunch(item.checked)
+        },
+        { label: "检查更新…", click: checkForUpdatesManual }
+      ]
+    },
+    { type: "separator" },
     { label: "退出", click: () => app.quit() }
   ]);
 
@@ -1590,8 +1677,26 @@ ipcMain.handle("app:get-bootstrap", async () => {
     holdings,
     todaySnapshot: getTodaySnapshotSummary(),
     dataNotices: [...runtimeCache.dataNotices],
-    dataDir: getDataDir()
+    dataDir: getDataDir(),
+    appConfig: buildAppConfigPayload()
   };
+});
+
+ipcMain.handle("app:get-config", () => buildAppConfigPayload());
+
+ipcMain.handle("app:set-auto-launch", (_event, enabled) => {
+  setAutoLaunch(!!enabled);
+  return buildAppConfigPayload();
+});
+
+ipcMain.handle("app:set-guide-seen", () => {
+  writeAppConfig({ guideSeen: true });
+  return buildAppConfigPayload();
+});
+
+ipcMain.handle("app:check-updates", () => {
+  checkForUpdatesManual();
+  return { ok: true };
 });
 
 ipcMain.handle("stocks:search", async (_, keyword) => {
@@ -1763,11 +1868,103 @@ function startSnapshotGuard() {
   }, 15000);
 }
 
+/**
+ * 自动更新（P0）：仅安装版启用。
+ * 默认不自动下载——发现新版本先询问，下载完成后再询问是否重启安装。
+ */
+function setupAutoUpdater() {
+  if (!app.isPackaged) {
+    return;
+  }
+
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("update-available", async (info) => {
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      buttons: ["立即更新", "稍后提醒"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "发现新版本",
+      message: `发现新版本 ${info.version}`,
+      detail: "下载完成后会再次提示是否重启安装，期间可继续使用当前版本。"
+    });
+    if (response === 0) {
+      autoUpdater.downloadUpdate();
+    }
+  });
+
+  autoUpdater.on("update-downloaded", async () => {
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      buttons: ["立即重启并安装", "下次启动时安装"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "更新已就绪",
+      message: "新版本已下载完成",
+      detail: "选择「下次启动时安装」不会打断当前使用。"
+    });
+    if (response === 0) {
+      autoUpdater.quitAndInstall(false, true);
+    }
+  });
+
+  autoUpdater.on("error", (error) => {
+    console.warn("[autoUpdater]", error && error.message);
+  });
+
+  const check = () => {
+    if (!readAppConfig().updateCheck) {
+      return;
+    }
+    autoUpdater.checkForUpdates().catch((error) => {
+      console.warn("[autoUpdater] check failed:", error && error.message);
+    });
+  };
+
+  setTimeout(check, 5000);
+  setInterval(check, 4 * 60 * 60 * 1000);
+}
+
+/** 手动检查更新（托盘 / 右键菜单入口） */
+function checkForUpdatesManual() {
+  if (!app.isPackaged) {
+    dialog.showMessageBox({
+      type: "info",
+      message: "开发模式不支持检查更新",
+      detail: "使用安装包启动后即可使用自动更新。"
+    });
+    return;
+  }
+  autoUpdater
+    .checkForUpdates()
+    .then((result) => {
+      const latest = result && result.updateInfo && result.updateInfo.version;
+      if (!latest || latest === app.getVersion()) {
+        dialog.showMessageBox({
+          type: "info",
+          message: "当前已是最新版本",
+          detail: `版本 ${app.getVersion()}`
+        });
+      }
+    })
+    .catch((error) => {
+      dialog.showMessageBox({
+        type: "warning",
+        message: "检查更新失败",
+        detail: (error && error.message) || "请稍后重试，或到 Releases 页面手动下载。"
+      });
+    });
+}
+
 app.whenReady().then(() => {
   ensureDataFiles();
   createPetWindow();
   createTray();
   startSnapshotGuard();
+  syncAutoLaunchOnStart();
+  setupAutoUpdater();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

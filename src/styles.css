@@ -285,6 +285,43 @@ td .ghost-btn + .danger-btn {
   margin-left: 8px;
 }
 
+/* ---------- 首次启动引导 ---------- */
+.guide-modal {
+  max-width: 460px;
+}
+.guide-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 16px;
+}
+.guide-list p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #cbd5e1;
+}
+.guide-list b {
+  color: #e2e8f0;
+}
+.guide-checkbox {
+  margin-bottom: 14px;
+}
+.guide-checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+.guide-checkbox input {
+  width: 16px;
+  height: 16px;
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
+
 .summary-main {
   padding: 24px 22px 10px;
 }
