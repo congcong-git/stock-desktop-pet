@@ -1,7 +1,7 @@
 {
   "name": "stock-watcher-widget",
-  "version": "1.0.0",
-  "description": "股票观察器桌面小组件",
+  "version": "1.0.1",
+  "description": "股票桌宠",
   "author": "xuniwodecong",
   "main": "electron/main.js",
   "scripts": {
@@ -70,6 +70,7 @@
     "react-dom": "18.2.0"
   },
   "devDependencies": {
+    "cli-truncate": "^3.1.0",
     "electron": "22.3.27",
     "electron-builder": "23.6.0",
     "esbuild": "0.17.19"

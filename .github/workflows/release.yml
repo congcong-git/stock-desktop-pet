@@ -34,7 +34,10 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # 注意：package-lock.json 是 npm 6 在 Windows 上生成的 v1 格式，
+        # 未记录 darwin 专属可选依赖（dmg-license 等），npm ci 会照 lock 漏装。
+        # 用 npm install 让各平台现场解析自己的依赖树。
+        run: npm install --no-audit --no-fund
 
       - name: Build
         run: npm run ${{ matrix.script }}
