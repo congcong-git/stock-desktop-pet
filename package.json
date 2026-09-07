@@ -39,7 +39,7 @@
           ]
         }
       ],
-      "artifactName": "${productName}-setup-${version}.${ext}"
+      "artifactName": "niulai-setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -65,7 +65,7 @@
           ]
         }
       ],
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "artifactName": "niulai-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.finance"
     }
   },
