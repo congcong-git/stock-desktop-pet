@@ -1,9 +1,12 @@
 name: Release
 
-# 注意：日常发版（Windows 安装包 + 自动更新所需的 latest.yml）由 build-release.yml 负责。
-# 本流水线保留 macOS 打包能力，但仅手动触发——避免打 tag 时两条流水线同时运行、
-# 争抢同一个 Release 导致上传冲突（产物文件名含中文时尤其容易失败）。
+# 正式发版流水线：打 tag 即构建 Windows + macOS 双平台并发布。
+# 发布只由本流水线负责（build-release.yml 仅做构建校验），
+# 避免两条流水线打 tag 时争抢同一个 Release。
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -73,12 +76,14 @@ jobs:
             release/*.exe
             release/*.dmg
             release/*.zip
+            release/latest.yml
+            release/latest-mac.yml
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
     needs: build
-    if: github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
@@ -94,4 +99,6 @@ jobs:
             artifacts/**/*.exe
             artifacts/**/*.dmg
             artifacts/**/*.zip
+            artifacts/**/latest.yml
+            artifacts/**/latest-mac.yml
           generate_release_notes: true
