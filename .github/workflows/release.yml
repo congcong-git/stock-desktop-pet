@@ -39,10 +39,6 @@ jobs:
         # 用 npm install 让各平台现场解析自己的依赖树。
         run: npm install --no-audit --no-fund
 
-      - name: Verify mac dependency resolution
-        if: runner.os == 'macOS'
-        run: node -e "const fs=require('fs');for(const m of ['cli-truncate','dmg-license','iconv-corefoundation']){const p='node_modules/'+m+'/package.json';console.log(m, fs.existsSync(p)?JSON.parse(fs.readFileSync(p)).version:'MISSING'}"
-
       - name: Force CJS cli-truncate (dmg-license ERR_REQUIRE_ESM workaround)
         if: runner.os == 'macOS'
         run: |
