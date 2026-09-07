@@ -1071,9 +1071,9 @@ function createTray() {
   }
   const icon = nativeImage.createFromPath(iconPath);
   tray = new Tray(icon);
-  tray.setToolTip("牛来 · 股票观察宠物");
+  tray.setToolTip("牛来 · 股票桌面宠物");
   const menu = Menu.buildFromTemplate([
-    { label: "牛来 · 股票观察宠物", enabled: false },
+    { label: "牛来 · 股票桌面宠物", enabled: false },
     { type: "separator" },
     { label: "打开管理面板", click: focusPanelWindow },
     { label: "打开宠物素材库", click: () => createMediaWindow() },
@@ -1684,6 +1684,37 @@ ipcMain.handle("holding:update", async (_, payload) => {
   };
   writeJson("holdings.json", updated);
   return { ok: true, holdings: updated };
+});
+
+ipcMain.handle("watchlist:remove", async (_, code) => {
+  const targetCode = String(code || "").trim();
+  const watchlist = readJson("watchlist.json", []).map(normalizeStock);
+  const nextWatchlist = watchlist.filter((item) => item.code !== targetCode);
+
+  if (nextWatchlist.length === watchlist.length) {
+    throw new Error("未找到要移除的自选股。");
+  }
+
+  writeJson("watchlist.json", nextWatchlist);
+  return { ok: true, watchlist: nextWatchlist };
+});
+
+ipcMain.handle("holding:remove", async (_, code) => {
+  const targetCode = String(code || "").trim();
+  const holdings = readJson("holdings.json", []).map((item) => ({
+    ...normalizeStock(item),
+    quantity: Number(item.quantity || 0),
+    costPrice: item.costPrice != null && item.costPrice !== "" ? Number(item.costPrice) : null,
+    addedAt: item.addedAt || null
+  }));
+  const nextHoldings = holdings.filter((item) => item.code !== targetCode);
+
+  if (nextHoldings.length === holdings.length) {
+    throw new Error("未找到要删除的持仓记录。");
+  }
+
+  writeJson("holdings.json", nextHoldings);
+  return { ok: true, holdings: nextHoldings };
 });
 
 ipcMain.handle("market:refresh", async () => {

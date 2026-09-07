@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld("stockWatcher", {
   addWatchlist: (stock) => ipcRenderer.invoke("watchlist:add", stock),
   saveHolding: (payload) => ipcRenderer.invoke("holding:save", payload),
   updateHolding: (payload) => ipcRenderer.invoke("holding:update", payload),
+  removeWatchlist: (code) => ipcRenderer.invoke("watchlist:remove", code),
+  removeHolding: (code) => ipcRenderer.invoke("holding:remove", code),
   refreshMarket: () => ipcRenderer.invoke("market:refresh"),
   getSnapshots: () => ipcRenderer.invoke("snapshot:get"),
   openDataDir: () => ipcRenderer.invoke("data:open-dir"),

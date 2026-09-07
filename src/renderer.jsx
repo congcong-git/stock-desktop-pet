@@ -460,11 +460,41 @@ function App() {
     }
   }
 
+  async function handleRemoveWatchlist(row) {
+    const confirmed = window.confirm(`确定从自选股中移除「${row.name}（${row.code}）」吗？`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      const result = await window.stockWatcher.removeWatchlist(row.code);
+      setWatchlist(result.watchlist || []);
+      setStatusMessage(`已从自选股移除：${row.name}`);
+      await refreshMarket(false);
+    } catch (error) {
+      setStatusMessage(`移除自选股失败：${error.message}`);
+    }
+  }
+
+  async function handleRemoveHolding(row) {
+    const confirmed = window.confirm(`确定删除持仓「${row.name}（${row.code}）」吗？该操作不可撤销。`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      const result = await window.stockWatcher.removeHolding(row.code);
+      setHoldings(result.holdings || []);
+      setStatusMessage(`已删除持仓：${row.name}`);
+      await refreshMarket(false);
+    } catch (error) {
+      setStatusMessage(`删除持仓失败：${error.message}`);
+    }
+  }
+
   return (
     <div className={classNames("app-shell", themeClass)}>
       <div className="app-header">
         <div>
-          <div className="eyebrow">股票观察器桌面小组件</div>
+          <div className="eyebrow">股票桌宠小组件</div>
           <h1>实时盯盘与今日盈亏总览</h1>
           <p>搜索股票、维护自选与持仓，并在桌面端持续查看 A 股状态。</p>
         </div>
@@ -623,12 +653,13 @@ function App() {
                   <th>当前涨幅</th>
                   <th>较开盘价涨跌幅</th>
                   <th>状态</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
                 {marketState.watchlistRows.length === 0 ? (
                   <tr>
-                    <td colSpan="7" className="empty-cell">
+                    <td colSpan="8" className="empty-cell">
                       暂无自选股
                     </td>
                   </tr>
@@ -646,6 +677,11 @@ function App() {
                         {row.quote ? formatPercent(row.quote.openChangePercent) : "--"}
                       </td>
                       <td className={classNames("status-text", row.error && "stale-text")}>{row.error || "正常"}</td>
+                      <td>
+                        <button className="danger-btn" onClick={() => handleRemoveWatchlist(row)}>
+                          删除
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -702,6 +738,9 @@ function App() {
                       <td>
                         <button className="ghost-btn" onClick={() => openEditHoldingModal(row)}>
                           编辑持仓
+                        </button>
+                        <button className="danger-btn" onClick={() => handleRemoveHolding(row)}>
+                          删除
                         </button>
                       </td>
                     </tr>

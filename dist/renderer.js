@@ -24802,10 +24802,38 @@
         setStatusMessage(`\u4FDD\u5B58\u6301\u4ED3\u5931\u8D25\uFF1A${error.message}`);
       }
     }
+    async function handleRemoveWatchlist(row) {
+      const confirmed = window.confirm(`\u786E\u5B9A\u4ECE\u81EA\u9009\u80A1\u4E2D\u79FB\u9664\u300C${row.name}\uFF08${row.code}\uFF09\u300D\u5417\uFF1F`);
+      if (!confirmed) {
+        return;
+      }
+      try {
+        const result = await window.stockWatcher.removeWatchlist(row.code);
+        setWatchlist(result.watchlist || []);
+        setStatusMessage(`\u5DF2\u4ECE\u81EA\u9009\u80A1\u79FB\u9664\uFF1A${row.name}`);
+        await refreshMarket(false);
+      } catch (error) {
+        setStatusMessage(`\u79FB\u9664\u81EA\u9009\u80A1\u5931\u8D25\uFF1A${error.message}`);
+      }
+    }
+    async function handleRemoveHolding(row) {
+      const confirmed = window.confirm(`\u786E\u5B9A\u5220\u9664\u6301\u4ED3\u300C${row.name}\uFF08${row.code}\uFF09\u300D\u5417\uFF1F\u8BE5\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002`);
+      if (!confirmed) {
+        return;
+      }
+      try {
+        const result = await window.stockWatcher.removeHolding(row.code);
+        setHoldings(result.holdings || []);
+        setStatusMessage(`\u5DF2\u5220\u9664\u6301\u4ED3\uFF1A${row.name}`);
+        await refreshMarket(false);
+      } catch (error) {
+        setStatusMessage(`\u5220\u9664\u6301\u4ED3\u5931\u8D25\uFF1A${error.message}`);
+      }
+    }
     return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: classNames("app-shell", themeClass), children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "app-header", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "eyebrow", children: "\u80A1\u7968\u89C2\u5BDF\u5668\u684C\u9762\u5C0F\u7EC4\u4EF6" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "eyebrow", children: "\u80A1\u7968\u684C\u5BA0\u5C0F\u7EC4\u4EF6" }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: "\u5B9E\u65F6\u76EF\u76D8\u4E0E\u4ECA\u65E5\u76C8\u4E8F\u603B\u89C8" }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "\u641C\u7D22\u80A1\u7968\u3001\u7EF4\u62A4\u81EA\u9009\u4E0E\u6301\u4ED3\uFF0C\u5E76\u5728\u684C\u9762\u7AEF\u6301\u7EED\u67E5\u770B A \u80A1\u72B6\u6001\u3002" })
         ] }),
@@ -24929,16 +24957,18 @@
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "\u5F53\u524D\u4EF7" }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "\u5F53\u524D\u6DA8\u5E45" }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "\u8F83\u5F00\u76D8\u4EF7\u6DA8\u8DCC\u5E45" }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "\u72B6\u6001" })
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "\u72B6\u6001" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("th", { children: "\u64CD\u4F5C" })
             ] }) }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("tbody", { children: marketState.watchlistRows.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("tr", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { colSpan: "7", className: "empty-cell", children: "\u6682\u65E0\u81EA\u9009\u80A1" }) }) : marketState.watchlistRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("tr", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("tbody", { children: marketState.watchlistRows.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("tr", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { colSpan: "8", className: "empty-cell", children: "\u6682\u65E0\u81EA\u9009\u80A1" }) }) : marketState.watchlistRows.map((row) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("tr", { children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: row.index }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: row.name }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: row.code }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: row.quote ? formatPrice(row.quote.currentPrice) : "--" }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { className: getValueTone(row.quote ? row.quote.changePercent : null), children: row.quote ? formatPercent(row.quote.changePercent) : "--" }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { className: getValueTone(row.quote ? row.quote.openChangePercent : null), children: row.quote ? formatPercent(row.quote.openChangePercent) : "--" }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { className: classNames("status-text", row.error && "stale-text"), children: row.error || "\u6B63\u5E38" })
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { className: classNames("status-text", row.error && "stale-text"), children: row.error || "\u6B63\u5E38" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "danger-btn", onClick: () => handleRemoveWatchlist(row), children: "\u5220\u9664" }) })
             ] }, row.code)) })
           ] }) })
         ] }),
@@ -24968,7 +24998,10 @@
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { className: getValueTone(row.quote ? row.quote.openChangePercent : null), children: row.quote ? formatPercent(row.quote.openChangePercent) : "--" }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: row.quantity }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { className: getValueTone(row.dailyProfit), children: formatCurrency(row.dailyProfit) }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("td", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ghost-btn", onClick: () => openEditHoldingModal(row), children: "\u7F16\u8F91\u6301\u4ED3" }) })
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("td", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "ghost-btn", onClick: () => openEditHoldingModal(row), children: "\u7F16\u8F91\u6301\u4ED3" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "danger-btn", onClick: () => handleRemoveHolding(row), children: "\u5220\u9664" })
+              ] })
             ] }, row.code)) })
           ] }) })
         ] })
