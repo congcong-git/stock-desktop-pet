@@ -15,6 +15,11 @@
   "build": {
     "appId": "com.trae.stockwatcher",
     "productName": "牛来",
+    "publish": {
+      "provider": "github",
+      "owner": "congcong-git",
+      "repo": "stock"
+    },
     "asar": true,
     "files": [
       "dist/**/*",
