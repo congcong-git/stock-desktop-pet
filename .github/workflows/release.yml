@@ -41,7 +41,26 @@ jobs:
 
       - name: Verify mac dependency resolution
         if: runner.os == 'macOS'
-        run: node -e "const fs=require('fs');for(const m of ['cli-truncate','dmg-license','iconv-corefoundation']){const p='node_modules/'+m+'/package.json';console.log(m, fs.existsSync(p)?JSON.parse(fs.readFileSync(p)).version:'MISSING')}"
+        run: node -e "const fs=require('fs');for(const m of ['cli-truncate','dmg-license','iconv-corefoundation']){const p='node_modules/'+m+'/package.json';console.log(m, fs.existsSync(p)?JSON.parse(fs.readFileSync(p)).version:'MISSING'}"
+
+      - name: Force CJS cli-truncate (dmg-license ERR_REQUIRE_ESM workaround)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          echo "== before =="
+          npm ls cli-truncate --all 2>&1 | head -20 || true
+          find node_modules -type d -name cli-truncate
+          # 删除所有嵌套副本，确保 require 只会命中顶层的 CJS 版本
+          find node_modules -mindepth 2 -type d -name cli-truncate -prune -exec rm -rf {} + 2>/dev/null || true
+          # 直接取 tarball 解包，绕开 npm 对 lock/overrides 的解析
+          rm -rf node_modules/cli-truncate
+          npm pack cli-truncate@2.1.0 --pack-destination "$RUNNER_TEMP" >/dev/null
+          mkdir -p "$RUNNER_TEMP/ct"
+          tar -xzf "$RUNNER_TEMP/cli-truncate-2.1.0.tgz" -C "$RUNNER_TEMP/ct"
+          mv "$RUNNER_TEMP/ct/package" node_modules/cli-truncate
+          echo "== after =="
+          find node_modules -type d -name cli-truncate
+          node -p "const p=require('./node_modules/cli-truncate/package.json'); 'cli-truncate '+p.version+' type='+(p.type||'commonjs')"
 
       - name: Build
         run: npm run ${{ matrix.script }}

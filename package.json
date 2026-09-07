@@ -1,6 +1,6 @@
 {
   "name": "stock-watcher-widget",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "股票桌宠",
   "author": "xuniwodecong",
   "main": "electron/main.js",
