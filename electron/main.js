@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, shell, Tray } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
@@ -6,6 +6,9 @@ const https = require("https");
 const http = require("http");
 const zlib = require("zlib");
 const iconv = require("iconv-lite");
+
+// 与 package.json build.appId 保持一致：修复 Windows 任务栏按钮分组丢失
+app.setAppUserModelId("com.trae.stockwatcher");
 
 const MAX_HISTORY_DAYS = 30;
 const MAX_STOCK_CACHE = 300;
@@ -1029,12 +1032,70 @@ async function refreshMarket() {
 let panelWindow = null;
 let petWindow = null;
 let mediaWindow = null;
+let tray = null;
 
 const PET_WINDOW = { width: 240, height: 300 };
+
+/** 恢复/打开管理面板：最小化状态下先还原再聚焦（托盘入口共用） */
+function focusPanelWindow() {
+  if (panelWindow && !panelWindow.isDestroyed()) {
+    if (panelWindow.isMinimized()) {
+      panelWindow.restore();
+    }
+    panelWindow.show();
+    panelWindow.focus();
+  } else {
+    createPanelWindow();
+  }
+}
+
+/** 把桌宠拉回主屏右下角（防被拖出屏幕后找不到） */
+function resetPetToCorner() {
+  if (petWindow && !petWindow.isDestroyed()) {
+    const workArea = screen.getPrimaryDisplay().workArea;
+    petWindow.show();
+    petWindow.setPosition(
+      workArea.x + workArea.width - PET_WINDOW.width - 24,
+      workArea.y + workArea.height - PET_WINDOW.height - 20
+    );
+  } else {
+    createPetWindow();
+  }
+}
+
+/** 系统托盘：最小化/误关后唯一常驻的找回入口 */
+function createTray() {
+  const iconPath = path.join(__dirname, "tray-icon.png");
+  if (!fs.existsSync(iconPath)) {
+    return;
+  }
+  const icon = nativeImage.createFromPath(iconPath);
+  tray = new Tray(icon);
+  tray.setToolTip("牛来 · 股票观察宠物");
+  const menu = Menu.buildFromTemplate([
+    { label: "牛来 · 股票观察宠物", enabled: false },
+    { type: "separator" },
+    { label: "打开管理面板", click: focusPanelWindow },
+    { label: "打开宠物素材库", click: () => createMediaWindow() },
+    { label: "桌宠回到屏幕右下角", click: resetPetToCorner },
+    { type: "separator" },
+    { label: "打开数据目录", click: () => shell.openPath(getDataDir()) },
+    { type: "separator" },
+    { label: "退出", click: () => app.quit() }
+  ]);
+  tray.on("click", focusPanelWindow);
+  tray.on("double-click", focusPanelWindow);
+  tray.on("right-click", () => {
+    menu.popup({});
+  });
+}
 
 /** 管理面板（V1.0 完整界面）：单实例，重复打开时聚焦已有窗口 */
 function createPanelWindow() {
   if (panelWindow && !panelWindow.isDestroyed()) {
+    if (panelWindow.isMinimized()) {
+      panelWindow.restore();
+    }
     panelWindow.show();
     panelWindow.focus();
     return panelWindow;
@@ -1072,6 +1133,9 @@ function createPanelWindow() {
 /** 素材库管理窗口（V2.1）：浏览/导入素材，按情绪槽位绑定、一键试穿。单实例，重复打开时聚焦已有窗口 */
 function createMediaWindow() {
   if (mediaWindow && !mediaWindow.isDestroyed()) {
+    if (mediaWindow.isMinimized()) {
+      mediaWindow.restore();
+    }
     mediaWindow.show();
     mediaWindow.focus();
     return mediaWindow;
@@ -1671,6 +1735,7 @@ function startSnapshotGuard() {
 app.whenReady().then(() => {
   ensureDataFiles();
   createPetWindow();
+  createTray();
   startSnapshotGuard();
 
   app.on("activate", () => {
