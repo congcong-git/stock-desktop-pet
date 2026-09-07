@@ -3,6 +3,10 @@ name: Release
 # 正式发版流水线：打 tag 即构建 Windows + macOS 双平台并发布。
 # 发布只由本流水线负责（build-release.yml 仅做构建校验），
 # 避免两条流水线打 tag 时争抢同一个 Release。
+# 注意：npm run dist:* 已带 --publish never（构建不发布），
+# 产物由下方 release job 统一用 softprops 上传；
+# 若去掉 --publish never，electron-builder 在 CI 检测到 draft release
+# 会自行发布，与 softprops 重复上传导致 Release 出现两套同名/冗余资产。
 on:
   push:
     tags:
@@ -62,9 +66,10 @@ jobs:
           node -p "const p=require('./node_modules/cli-truncate/package.json'); 'cli-truncate '+p.version+' type='+(p.type||'commonjs')"
 
       - name: Build
+        # 发布统一由下方 release job 完成，构建阶段不注入 GH_TOKEN，
+        # scripts 也带 --publish never，确保 electron-builder 不会自行上传。
         run: npm run ${{ matrix.script }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # CI 无 Apple 证书，跳过签名发现（已配置证书可删除该变量）
           CSC_IDENTITY_AUTO_DISCOVERY: false
 

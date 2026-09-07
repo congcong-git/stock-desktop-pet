@@ -8,8 +8,8 @@
     "start": "npm run build:renderer && electron .",
     "dev": "npm run start",
     "build:renderer": "node scripts/build-renderer.js",
-    "dist:win": "npm run build:renderer && electron-builder --win nsis",
-    "dist:mac": "npm run build:renderer && electron-builder --mac",
+    "dist:win": "npm run build:renderer && electron-builder --win nsis --publish never",
+    "dist:mac": "npm run build:renderer && electron-builder --mac --publish never",
     "dist": "npm run dist:win"
   },
   "build": {
