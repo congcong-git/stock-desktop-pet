@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld("stockWatcher", {
   deleteMediaItem: (name) => ipcRenderer.invoke("media:delete-item", name),
   renameMediaItem: (oldName, newName) => ipcRenderer.invoke("media:rename-item", { oldName, newName }),
   previewMedia: (item) => ipcRenderer.invoke("media:preview-item", item),
+  saveRemovedBg: (payload) => ipcRenderer.invoke("media:save-removed-bg", payload),
   onMoodBindingsChanged: (callback) => {
     const listener = (_event, bindings) => callback(bindings);
     ipcRenderer.on("media:bindings-changed", listener);

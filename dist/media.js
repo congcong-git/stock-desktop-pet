@@ -24400,6 +24400,163 @@
   // src/media.jsx
   var import_react = __toESM(require_react());
   var import_client = __toESM(require_client());
+
+  // src/lib/removeBg.js
+  function resolveAssetBase() {
+    try {
+      if (typeof window === "undefined" || !window.location)
+        return "";
+      const value = new URLSearchParams(window.location.search).get("assets");
+      return value ? decodeURIComponent(value) : "";
+    } catch (_error) {
+      return "";
+    }
+  }
+  var ASSET_BASE = resolveAssetBase();
+  var assetUrl = (relative) => {
+    if (!ASSET_BASE)
+      return `./${relative}`;
+    const normalized = ASSET_BASE.replace(/\\/g, "/").replace(/^file:\/\/\//, "");
+    return `file:///${encodeURI(normalized)}/${relative}`;
+  };
+  var MODEL_URL = assetUrl("models/u2netp.onnx");
+  var WASM_DIR = `${assetUrl("ort")}/`;
+  var INPUT_SIZE = 320;
+  var MEAN = [0.485, 0.456, 0.406];
+  var STD = [0.229, 0.224, 0.225];
+  var SOFT_EDGE = 0.14;
+  var sessionPromise = null;
+  function getOrt() {
+    const ort = typeof window !== "undefined" ? window.ort : null;
+    if (!ort)
+      throw new Error("\u63A8\u7406\u5F15\u64CE\u672A\u52A0\u8F7D\uFF08ort.min.js \u7F3A\u5931\uFF09");
+    return ort;
+  }
+  function loadModel() {
+    if (sessionPromise)
+      return sessionPromise;
+    const ort = getOrt();
+    ort.env.wasm.wasmPaths = WASM_DIR;
+    ort.env.wasm.numThreads = 1;
+    ort.env.logLevel = "error";
+    sessionPromise = ort.InferenceSession.create(MODEL_URL, {
+      executionProviders: ["wasm"],
+      graphOptimizationLevel: "all"
+    }).catch((error) => {
+      sessionPromise = null;
+      throw error;
+    });
+    return sessionPromise;
+  }
+  function loadImage(url) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("\u56FE\u7247\u52A0\u8F7D\u5931\u8D25"));
+      image.src = url;
+    });
+  }
+  function buildInputTensor(image) {
+    const canvas = document.createElement("canvas");
+    canvas.width = INPUT_SIZE;
+    canvas.height = INPUT_SIZE;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0, INPUT_SIZE, INPUT_SIZE);
+    const { data } = ctx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
+    const pixels = INPUT_SIZE * INPUT_SIZE;
+    const tensor = new Float32Array(pixels * 3);
+    let offset = 0;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const mean = MEAN[channel];
+      const std = STD[channel];
+      for (let i = 0; i < pixels; i += 1) {
+        tensor[offset] = (data[i * 4 + channel] / 255 - mean) / std;
+        offset += 1;
+      }
+    }
+    return tensor;
+  }
+  async function computeMask(image) {
+    const ort = getOrt();
+    const session = await loadModel();
+    const inputName = session.inputNames[0];
+    const tensor = new ort.Tensor("float32", buildInputTensor(image), [1, 3, INPUT_SIZE, INPUT_SIZE]);
+    const outputs = await session.run({ [inputName]: tensor });
+    const result = outputs[session.outputNames[0]];
+    const raw = result.data;
+    const dims = result.dims || [];
+    const size = dims[dims.length - 1] || INPUT_SIZE;
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < raw.length; i += 1) {
+      const value = raw[i];
+      if (value < min)
+        min = value;
+      if (value > max)
+        max = value;
+    }
+    const range = max - min || 1;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    const imageData = ctx.createImageData(size, size);
+    for (let i = 0; i < size * size; i += 1) {
+      const value = (raw[i] - min) / range;
+      const gray = Math.max(0, Math.min(255, Math.round(value * 255)));
+      imageData.data[i * 4] = gray;
+      imageData.data[i * 4 + 1] = gray;
+      imageData.data[i * 4 + 2] = gray;
+      imageData.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return canvas;
+  }
+  function applyMask(image, mask, options = {}) {
+    const threshold = typeof options.threshold === "number" ? options.threshold : 0.5;
+    const feather = typeof options.feather === "number" ? options.feather : 1;
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.width = width;
+    maskCanvas.height = height;
+    const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true });
+    if (feather > 0) {
+      maskCtx.filter = `blur(${feather}px)`;
+    }
+    maskCtx.drawImage(mask, 0, 0, width, height);
+    maskCtx.filter = "none";
+    const maskPixels = maskCtx.getImageData(0, 0, width, height).data;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(image, 0, 0);
+    const output = ctx.getImageData(0, 0, width, height);
+    const data = output.data;
+    const low = threshold - SOFT_EDGE / 2;
+    for (let i = 0; i < width * height; i += 1) {
+      const probability = maskPixels[i * 4] / 255;
+      let alpha = SOFT_EDGE > 0 ? (probability - low) / SOFT_EDGE : probability >= threshold ? 1 : 0;
+      alpha = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+      data[i * 4 + 3] = Math.round(alpha * 255);
+    }
+    ctx.putImageData(output, 0, 0);
+    return canvas;
+  }
+  function canvasToPngBytes(canvas) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error("\u751F\u6210\u56FE\u7247\u5931\u8D25"));
+          return;
+        }
+        blob.arrayBuffer().then((buffer) => resolve(new Uint8Array(buffer))).catch(reject);
+      }, "image/png");
+    });
+  }
+
+  // src/media.jsx
   var import_jsx_runtime = __toESM(require_jsx_runtime());
   var MOOD_META = [
     { key: "idle", label: "\u5F85\u673A", desc: "\u884C\u60C5\u6301\u5E73 / \u7A7A\u4ED3" },
@@ -24497,6 +24654,86 @@
       }
     }, [items, selectedName]);
     const selectedItem = items ? items.find((item) => item.name === selectedName) : null;
+    const [bgOpen, setBgOpen] = (0, import_react.useState)(false);
+    const [bgStage, setBgStage] = (0, import_react.useState)("");
+    const [bgError, setBgError] = (0, import_react.useState)("");
+    const [bgSource, setBgSource] = (0, import_react.useState)(null);
+    const [bgImage, setBgImage] = (0, import_react.useState)(null);
+    const [bgMask, setBgMask] = (0, import_react.useState)(null);
+    const [bgThreshold, setBgThreshold] = (0, import_react.useState)(0.5);
+    const [bgFeather, setBgFeather] = (0, import_react.useState)(1);
+    const [bgResultUrl, setBgResultUrl] = (0, import_react.useState)("");
+    const [bgSaving, setBgSaving] = (0, import_react.useState)(false);
+    const resultCanvasRef = (0, import_react.useRef)(null);
+    const isStillImage = (item) => !!item && item.kind === "image" && !/\.gif$/i.test(item.name);
+    const closeBgPanel = (0, import_react.useCallback)(() => {
+      setBgOpen(false);
+      setBgSource(null);
+      setBgImage(null);
+      setBgMask(null);
+      setBgResultUrl("");
+      setBgStage("");
+      setBgError("");
+      resultCanvasRef.current = null;
+    }, []);
+    const openBgPanel = (0, import_react.useCallback)(async () => {
+      if (!selectedItem || !isStillImage(selectedItem))
+        return;
+      setBgSource(selectedItem);
+      setBgStage("loading");
+      setBgError("");
+      setBgResultUrl("");
+      setBgOpen(true);
+      try {
+        const image = await loadImage(selectedItem.url);
+        setBgImage(image);
+        setBgStage("inferring");
+        const mask = await computeMask(image);
+        setBgMask(mask);
+        setBgStage("ready");
+      } catch (error) {
+        setBgError(error && error.message || "\u5904\u7406\u5931\u8D25");
+        setBgStage("error");
+      }
+    }, [selectedItem]);
+    (0, import_react.useEffect)(() => {
+      if (!bgOpen || !bgImage || !bgMask)
+        return;
+      const canvas = applyMask(bgImage, bgMask, { threshold: bgThreshold, feather: bgFeather });
+      resultCanvasRef.current = canvas;
+      setBgResultUrl(canvas.toDataURL("image/png"));
+    }, [bgOpen, bgImage, bgMask, bgThreshold, bgFeather]);
+    const saveBgResult = (0, import_react.useCallback)(
+      async (mood) => {
+        const canvas = resultCanvasRef.current;
+        if (!canvas || !bgSource || bgSaving)
+          return;
+        setBgSaving(true);
+        try {
+          const bytes = await canvasToPngBytes(canvas);
+          const result = await window.stockWatcher.saveRemovedBg({
+            sourceName: bgSource.name,
+            bytes,
+            mood: mood || ""
+          });
+          if (result && result.ok) {
+            const meta = MOOD_META.find((m) => m.key === mood);
+            showNotice(
+              meta ? `\u5DF2\u4FDD\u5B58 ${result.item.name}\uFF0C\u5E76\u8BBE\u4E3A\u300C${meta.label}\u300D\u663E\u793A` : `\u5DF2\u4FDD\u5B58 ${result.item.name}`
+            );
+            closeBgPanel();
+            await loadAll();
+          } else {
+            showNotice(result && result.message || "\u4FDD\u5B58\u5931\u8D25");
+          }
+        } catch (_error) {
+          showNotice("\u4FDD\u5B58\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5");
+        } finally {
+          setBgSaving(false);
+        }
+      },
+      [bgSource, bgSaving, closeBgPanel, loadAll, showNotice]
+    );
     const boundNameOf = (moodKey) => bindings[moodKey] || "";
     const moodKeysOf = (fileName) => MOOD_META.filter((meta) => bindings[meta.key] === fileName).map((meta) => meta.key);
     const handleImport = (0, import_react.useCallback)(async () => {
@@ -24763,6 +25000,17 @@
               children: previewing === selectedItem.name ? "\u505C\u6B62\u8BD5\u7A7F" : "\u8BD5\u7A7F\u5230\u5BA0\u7269"
             }
           ),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "ml-btn",
+              onClick: openBgPanel,
+              disabled: busy || !isStillImage(selectedItem),
+              title: isStillImage(selectedItem) ? "\u7528 AI \u53BB\u6389\u80CC\u666F\uFF0C\u751F\u6210\u900F\u660E\u7D20\u6750" : "\u672C\u671F\u4EC5\u652F\u6301\u9759\u6001\u56FE\uFF08PNG / JPG / WEBP\uFF09\uFF0CGIF \u4E0E\u89C6\u9891\u6682\u4E0D\u652F\u6301",
+              children: "\u53BB\u80CC\u666F"
+            }
+          ),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "ml-btn", onClick: beginRename, disabled: busy, children: "\u91CD\u547D\u540D" }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
             "button",
@@ -24776,6 +25024,103 @@
           )
         ] })
       ] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "ml-actions-hint", children: "\u70B9\u51FB\u4E0B\u65B9\u7D20\u6750\u5361\u7247\uFF0C\u53EF\u8BBE\u4E3A\u5404\u60C5\u7EEA\u663E\u793A / \u8BD5\u7A7F / \u91CD\u547D\u540D / \u5220\u9664" }) }),
+      bgOpen && bgSource && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "ml-overlay", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ml-bgpanel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { className: "ml-bgpanel-head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: "\u53BB\u9664\u80CC\u666F" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "ml-bgpanel-name", title: bgSource.name, children: truncate(bgSource.name, 28) }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "ml-btn ml-btn--tiny", onClick: closeBgPanel, disabled: bgSaving, children: "\u5173\u95ED" })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ml-bgpanel-body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ml-bgcols", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ml-bgcol", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "ml-bglabel", children: "\u539F\u56FE" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "ml-checker", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("img", { src: bgSource.url, alt: "" }) })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ml-bgcol", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "ml-bglabel", children: "\u53BB\u80CC\u666F\u540E" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "ml-checker", children: bgResultUrl ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("img", { src: bgResultUrl, alt: "" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "ml-bgstage", children: [
+                bgStage === "loading" && "\u6B63\u5728\u52A0\u8F7D\u6A21\u578B\u2026",
+                bgStage === "inferring" && "\u6B63\u5728\u8BC6\u522B\u4E3B\u4F53\u2026",
+                bgStage === "error" && (bgError || "\u5904\u7406\u5931\u8D25"),
+                !bgStage && "\u51C6\u5907\u4E2D\u2026"
+              ] }) })
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ml-sliders", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { className: "ml-slider", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "ml-slider-label", children: [
+                "\u9608\u503C ",
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: bgThreshold.toFixed(2) })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                "input",
+                {
+                  type: "range",
+                  min: "0.05",
+                  max: "0.95",
+                  step: "0.01",
+                  value: bgThreshold,
+                  disabled: bgStage !== "ready",
+                  onChange: (event) => setBgThreshold(Number(event.target.value))
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "ml-slider-hint", children: "\u8C03\u5C0F\u62A0\u5F97\u66F4\u5E72\u51C0\uFF0C\u8C03\u5927\u4FDD\u7559\u66F4\u591A\u8FB9\u7F18\u7EC6\u8282" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { className: "ml-slider", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "ml-slider-label", children: [
+                "\u8FB9\u7F18\u7FBD\u5316 ",
+                /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("b", { children: [
+                  bgFeather,
+                  "px"
+                ] })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                "input",
+                {
+                  type: "range",
+                  min: "0",
+                  max: "6",
+                  step: "0.5",
+                  value: bgFeather,
+                  disabled: bgStage !== "ready",
+                  onChange: (event) => setBgFeather(Number(event.target.value))
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "ml-slider-hint", children: "\u67D4\u5316\u8FB9\u7F18\u952F\u9F7F\uFF0C\u6570\u503C\u8FC7\u5927\u4F1A\u51FA\u73B0\u534A\u900F\u660E\u6BDB\u8FB9" })
+            ] })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("footer", { className: "ml-bgpanel-foot", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "ml-bgfoot-label", children: "\u4FDD\u5B58\u5E76\u7ED1\u5B9A\u5230\uFF1A" }),
+          MOOD_META.map((meta) => {
+            const inherited = bindings[meta.key] === bgSource.name;
+            return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+              "button",
+              {
+                type: "button",
+                className: "ml-btn ml-btn--bind",
+                style: inherited ? { color: MOOD_COLORS[meta.key], borderColor: MOOD_COLORS[meta.key] } : void 0,
+                disabled: bgStage !== "ready" || bgSaving,
+                title: inherited ? `\u539F\u7D20\u6750\u5DF2\u662F\u300C${meta.label}\u300D\u663E\u793A\uFF0C\u4FDD\u5B58\u540E\u5C06\u81EA\u52A8\u63A5\u7BA1` : `\u4FDD\u5B58\u540E\u8BBE\u4E3A\u300C${meta.label}\u300D\u663E\u793A`,
+                onClick: () => saveBgResult(meta.key),
+                children: meta.label
+              },
+              meta.key
+            );
+          }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            "button",
+            {
+              type: "button",
+              className: "ml-btn",
+              disabled: bgStage !== "ready" || bgSaving,
+              onClick: () => saveBgResult(""),
+              children: "\u4EC5\u4FDD\u5B58\u4E0D\u7ED1\u5B9A"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "ml-btn", onClick: closeBgPanel, disabled: bgSaving, children: "\u53D6\u6D88" })
+        ] })
+      ] }) }),
       renaming && selectedItem && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "ml-rename-bar", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "ml-rename-label", children: "\u91CD\u547D\u540D\u4E3A\uFF1A" }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)(

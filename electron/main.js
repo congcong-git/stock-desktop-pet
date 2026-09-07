@@ -42,6 +42,39 @@ function getMoodMediaDir() {
   return path.join(app.getPath("userData"), "mood-media");
 }
 
+/**
+ * 去背景运行时资源：把 dist/ort 与 dist/models 复制到 userData/assets。
+ * 打包后这些文件位于 app.asar 内，渲染进程的 fetch() 读不了 asar，
+ * 必须落到真实磁盘目录，再通过 ?assets= 查询参数传给渲染进程。
+ */
+const RUNTIME_ASSETS_TAG = "ort15-u2netp-v1";
+
+function ensureRuntimeAssets() {
+  const sourceRoot = path.join(__dirname, "..", "dist");
+  const destRoot = path.join(app.getPath("userData"), "assets");
+  const tagFile = path.join(destRoot, ".tag");
+  let needsCopy = true;
+  try {
+    needsCopy = fs.readFileSync(tagFile, "utf8").trim() !== RUNTIME_ASSETS_TAG;
+  } catch (_error) {
+    needsCopy = true;
+  }
+  if (needsCopy) {
+    fs.rmSync(destRoot, { recursive: true, force: true });
+    for (const sub of ["ort", "models"]) {
+      const fromDir = path.join(sourceRoot, sub);
+      const toDir = path.join(destRoot, sub);
+      if (!fs.existsSync(fromDir)) continue;
+      fs.mkdirSync(toDir, { recursive: true });
+      for (const file of fs.readdirSync(fromDir)) {
+        fs.copyFileSync(path.join(fromDir, file), path.join(toDir, file));
+      }
+    }
+    fs.writeFileSync(tagFile, RUNTIME_ASSETS_TAG);
+  }
+  return destRoot;
+}
+
 /** 依据扩展名判断素材类型：image / video / null（不支持） */
 function mediaKindOf(name) {
   const ext = path.extname(name).toLowerCase();
@@ -1057,11 +1090,16 @@ function createMediaWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      // 去背景需要读取本地 ONNX 模型与 wasm（file:// 下默认禁止跨文件 fetch）
+      allowFileAccessFromFiles: true
     }
   });
 
-  window.loadFile(path.join(__dirname, "..", "dist", "media.html"));
+  const assetRoot = ensureRuntimeAssets();
+  window.loadFile(path.join(__dirname, "..", "dist", "media.html"), {
+    query: { assets: encodeURIComponent(assetRoot.replace(/\\/g, "/")) }
+  });
   window.once("ready-to-show", () => {
     window.show();
   });
@@ -1349,6 +1387,35 @@ ipcMain.handle("media:set-bindings", (_event, bindings) => {
   const next = writeMoodBindings(bindings);
   broadcastBindings(next);
   return next;
+});
+
+/** 保存去背景结果：写入 <原名>-nobg.png，可同时绑定到指定情绪 */
+ipcMain.handle("media:save-removed-bg", async (_event, payload) => {
+  const sourceName = path.basename(String((payload && payload.sourceName) || "")).trim();
+  const bytes = payload && payload.bytes;
+  if (!sourceName || !bytes || !bytes.length) {
+    return { ok: false, message: "参数不完整" };
+  }
+
+  const dir = getMoodMediaDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const ext = path.extname(sourceName);
+  const base = path.basename(sourceName, ext);
+  const destPath = uniqueMediaDestPath(dir, `${base}-nobg.png`);
+  fs.writeFileSync(destPath, Buffer.from(bytes));
+
+  const item = { name: path.basename(destPath), kind: "image", url: toFileUrl(destPath) };
+
+  const mood = String((payload && payload.mood) || "");
+  let bindings = null;
+  if (mood === "idle" || mood === "happy" || mood === "sad") {
+    const next = normalizeBindings(readMoodBindings());
+    next[mood] = item.name;
+    bindings = writeMoodBindings(next);
+    broadcastBindings(bindings);
+  }
+  broadcastLibrary();
+  return { ok: true, item, bindings };
 });
 
 ipcMain.handle("media:pick-import", async (event) => {

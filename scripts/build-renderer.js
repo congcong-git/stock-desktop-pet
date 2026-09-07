@@ -59,6 +59,24 @@ async function build() {
   const petAssetsDir = path.join(srcDir, "assets", "pet");
   const distPetAssetsDir = path.join(distDir, "assets", "pet");
   copyDirSync(petAssetsDir, distPetAssetsDir);
+
+  // 去背景：复制 onnxruntime-web 运行时（UMD 入口 + wasm）到 dist/ort/
+  // 说明：onnxruntime-web 以 vendor 形式随仓库分发（build/vendor/ort），
+  //      不走 npm 依赖，规避不同 Node/Electron 环境的解析与打包差异。
+  const ortSourceDir = path.join(rootDir, "build", "vendor", "ort");
+  const ortDistDir = path.join(distDir, "ort");
+  fs.mkdirSync(ortDistDir, { recursive: true });
+  for (const ortFile of fs.readdirSync(ortSourceDir)) {
+    if (/\.(js|mjs|wasm)$/.test(ortFile)) {
+      fs.copyFileSync(path.join(ortSourceDir, ortFile), path.join(ortDistDir, ortFile));
+    }
+  }
+
+  // 去背景：复制 AI 分割模型到 dist/models/
+  const modelSourceDir = path.join(rootDir, "build", "models");
+  const modelDistDir = path.join(distDir, "models");
+  fs.mkdirSync(modelDistDir, { recursive: true });
+  fs.copyFileSync(path.join(modelSourceDir, "u2netp.onnx"), path.join(modelDistDir, "u2netp.onnx"));
 }
 
 /** 兼容旧版 Node 的递归目录复制 */

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./media.css";
+import { loadImage, computeMask, applyMask, canvasToPngBytes } from "./lib/removeBg";
 
 /**
  * 宠物素材库管理窗口（V2.1）
@@ -114,6 +115,92 @@ function App() {
   }, [items, selectedName]);
 
   const selectedItem = items ? items.find((item) => item.name === selectedName) : null;
+
+  // —— 去背景（仅静态图）——
+  const [bgOpen, setBgOpen] = useState(false);
+  const [bgStage, setBgStage] = useState("");
+  const [bgError, setBgError] = useState("");
+  const [bgSource, setBgSource] = useState(null);
+  const [bgImage, setBgImage] = useState(null);
+  const [bgMask, setBgMask] = useState(null);
+  const [bgThreshold, setBgThreshold] = useState(0.5);
+  const [bgFeather, setBgFeather] = useState(1);
+  const [bgResultUrl, setBgResultUrl] = useState("");
+  const [bgSaving, setBgSaving] = useState(false);
+  const resultCanvasRef = useRef(null);
+
+  /** 静态图才支持：GIF 与视频需逐帧处理，本期不支持 */
+  const isStillImage = (item) => !!item && item.kind === "image" && !/\.gif$/i.test(item.name);
+
+  const closeBgPanel = useCallback(() => {
+    setBgOpen(false);
+    setBgSource(null);
+    setBgImage(null);
+    setBgMask(null);
+    setBgResultUrl("");
+    setBgStage("");
+    setBgError("");
+    resultCanvasRef.current = null;
+  }, []);
+
+  const openBgPanel = useCallback(async () => {
+    if (!selectedItem || !isStillImage(selectedItem)) return;
+    setBgSource(selectedItem);
+    setBgStage("loading");
+    setBgError("");
+    setBgResultUrl("");
+    setBgOpen(true);
+    try {
+      const image = await loadImage(selectedItem.url);
+      setBgImage(image);
+      setBgStage("inferring");
+      const mask = await computeMask(image);
+      setBgMask(mask);
+      setBgStage("ready");
+    } catch (error) {
+      setBgError((error && error.message) || "处理失败");
+      setBgStage("error");
+    }
+  }, [selectedItem]);
+
+  // mask 与滑杆变化只重做合成，不重复推理
+  useEffect(() => {
+    if (!bgOpen || !bgImage || !bgMask) return;
+    const canvas = applyMask(bgImage, bgMask, { threshold: bgThreshold, feather: bgFeather });
+    resultCanvasRef.current = canvas;
+    setBgResultUrl(canvas.toDataURL("image/png"));
+  }, [bgOpen, bgImage, bgMask, bgThreshold, bgFeather]);
+
+  const saveBgResult = useCallback(
+    async (mood) => {
+      const canvas = resultCanvasRef.current;
+      if (!canvas || !bgSource || bgSaving) return;
+      setBgSaving(true);
+      try {
+        const bytes = await canvasToPngBytes(canvas);
+        const result = await window.stockWatcher.saveRemovedBg({
+          sourceName: bgSource.name,
+          bytes,
+          mood: mood || ""
+        });
+        if (result && result.ok) {
+          const meta = MOOD_META.find((m) => m.key === mood);
+          showNotice(
+            meta ? `已保存 ${result.item.name}，并设为「${meta.label}」显示` : `已保存 ${result.item.name}`
+          );
+          closeBgPanel();
+          await loadAll();
+        } else {
+          showNotice((result && result.message) || "保存失败");
+        }
+      } catch (_error) {
+        showNotice("保存失败，请重试");
+      } finally {
+        setBgSaving(false);
+      }
+    },
+    [bgSource, bgSaving, closeBgPanel, loadAll, showNotice]
+  );
 
   const boundNameOf = (moodKey) => bindings[moodKey] || "";
   const moodKeysOf = (fileName) => MOOD_META.filter((meta) => bindings[meta.key] === fileName).map((meta) => meta.key);
@@ -426,6 +513,19 @@ function App() {
               >
                 {previewing === selectedItem.name ? "停止试穿" : "试穿到宠物"}
               </button>
+              <button
+                type="button"
+                className="ml-btn"
+                onClick={openBgPanel}
+                disabled={busy || !isStillImage(selectedItem)}
+                title={
+                  isStillImage(selectedItem)
+                    ? "用 AI 去掉背景，生成透明素材"
+                    : "本期仅支持静态图（PNG / JPG / WEBP），GIF 与视频暂不支持"
+                }
+              >
+                去背景
+              </button>
               <button type="button" className="ml-btn" onClick={beginRename} disabled={busy}>
                 重命名
               </button>
@@ -443,6 +543,112 @@ function App() {
           <div className="ml-actions-hint">点击下方素材卡片，可设为各情绪显示 / 试穿 / 重命名 / 删除</div>
         )}
       </footer>
+
+      {bgOpen && bgSource && (
+        <div className="ml-overlay">
+          <div className="ml-bgpanel">
+            <header className="ml-bgpanel-head">
+              <h3>去除背景</h3>
+              <span className="ml-bgpanel-name" title={bgSource.name}>
+                {truncate(bgSource.name, 28)}
+              </span>
+              <button type="button" className="ml-btn ml-btn--tiny" onClick={closeBgPanel} disabled={bgSaving}>
+                关闭
+              </button>
+            </header>
+
+            <div className="ml-bgpanel-body">
+              <div className="ml-bgcols">
+                <div className="ml-bgcol">
+                  <span className="ml-bglabel">原图</span>
+                  <div className="ml-checker">
+                    <img src={bgSource.url} alt="" />
+                  </div>
+                </div>
+                <div className="ml-bgcol">
+                  <span className="ml-bglabel">去背景后</span>
+                  <div className="ml-checker">
+                    {bgResultUrl ? (
+                      <img src={bgResultUrl} alt="" />
+                    ) : (
+                      <span className="ml-bgstage">
+                        {bgStage === "loading" && "正在加载模型…"}
+                        {bgStage === "inferring" && "正在识别主体…"}
+                        {bgStage === "error" && (bgError || "处理失败")}
+                        {!bgStage && "准备中…"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="ml-sliders">
+                <label className="ml-slider">
+                  <span className="ml-slider-label">
+                    阈值 <b>{bgThreshold.toFixed(2)}</b>
+                  </span>
+                  <input
+                    type="range"
+                    min="0.05"
+                    max="0.95"
+                    step="0.01"
+                    value={bgThreshold}
+                    disabled={bgStage !== "ready"}
+                    onChange={(event) => setBgThreshold(Number(event.target.value))}
+                  />
+                  <span className="ml-slider-hint">调小抠得更干净，调大保留更多边缘细节</span>
+                </label>
+                <label className="ml-slider">
+                  <span className="ml-slider-label">
+                    边缘羽化 <b>{bgFeather}px</b>
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="6"
+                    step="0.5"
+                    value={bgFeather}
+                    disabled={bgStage !== "ready"}
+                    onChange={(event) => setBgFeather(Number(event.target.value))}
+                  />
+                  <span className="ml-slider-hint">柔化边缘锯齿，数值过大会出现半透明毛边</span>
+                </label>
+              </div>
+            </div>
+
+            <footer className="ml-bgpanel-foot">
+              <span className="ml-bgfoot-label">保存并绑定到：</span>
+              {MOOD_META.map((meta) => {
+                const inherited = bindings[meta.key] === bgSource.name;
+                return (
+                  <button
+                    key={meta.key}
+                    type="button"
+                    className="ml-btn ml-btn--bind"
+                    style={inherited ? { color: MOOD_COLORS[meta.key], borderColor: MOOD_COLORS[meta.key] } : undefined}
+                    disabled={bgStage !== "ready" || bgSaving}
+                    title={inherited ? `原素材已是「${meta.label}」显示，保存后将自动接管` : `保存后设为「${meta.label}」显示`}
+                    onClick={() => saveBgResult(meta.key)}
+                  >
+                    {meta.label}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                className="ml-btn"
+                disabled={bgStage !== "ready" || bgSaving}
+                onClick={() => saveBgResult("")}
+              >
+                仅保存不绑定
+              </button>
+              <button type="button" className="ml-btn" onClick={closeBgPanel} disabled={bgSaving}>
+                取消
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
 
       {renaming && selectedItem && (
         <div className="ml-rename-bar">
