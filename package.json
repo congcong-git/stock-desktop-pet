@@ -18,7 +18,7 @@
     "publish": {
       "provider": "github",
       "owner": "congcong-git",
-      "repo": "stock"
+      "repo": "stock-desktop-pet"
     },
     "asar": true,
     "files": [

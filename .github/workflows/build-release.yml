@@ -37,9 +37,11 @@ jobs:
         run: npm run build:renderer
 
       # 日常提交：只构建，不发布，产物作为 Actions artifact 供自测下载
+      # 注意：必须显式 --publish never，否则 CI 环境下 electron-builder 会因存在
+      # draft release 尝试发布，缺少 GH_TOKEN 直接构建失败
       - name: Package (build only)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') && inputs.publish != true }}
-        run: npx electron-builder --win nsis
+        run: npx electron-builder --win nsis --publish never
 
       # 发版：push tag v* 或手动勾选 publish，发布到 GitHub Release（含 latest.yml）
       - name: Package & publish Release
