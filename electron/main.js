@@ -1260,9 +1260,14 @@ function createTray() {
   tray = new Tray(icon);
   tray.setToolTip("牛来 · 股票桌面宠物");
   // 每次弹出时重建，保证「开机自启」勾选状态与实际一致
-  const buildMenu = () =>
-    Menu.buildFromTemplate([
-      { label: "牛来 · 股票桌面宠物", enabled: false },
+  const buildMenu = () => {
+    const template = [{ label: "牛来 · 股票桌面宠物", enabled: false }];
+    // 更新中在菜单顶部显示实时进度（右键即可查看，不必悬停图标）
+    const statusLabel = updateStatusLabel();
+    if (statusLabel) {
+      template.push({ label: statusLabel, enabled: false });
+    }
+    template.push(
       { type: "separator" },
       { label: "打开管理面板", click: focusPanelWindow },
       { label: "打开宠物素材库", click: () => createMediaWindow() },
@@ -1279,7 +1284,9 @@ function createTray() {
       { label: "打开数据目录", click: () => shell.openPath(getDataDir()) },
       { type: "separator" },
       { label: "退出", click: () => app.quit() }
-    ]);
+    );
+    return Menu.buildFromTemplate(template);
+  };
 
   tray.on("click", focusPanelWindow);
   tray.on("double-click", focusPanelWindow);
@@ -2199,9 +2206,78 @@ function startSnapshotGuard() {
   }, 15000);
 }
 
+/* ===== 自动更新状态：托盘 tooltip / 右键菜单 / 系统通知共用的进度反馈 ===== */
+const updateState = {
+  status: "idle", // idle | checking | downloading | downloaded | error
+  percent: 0,
+  transferred: 0,
+  total: 0,
+  version: "",
+  message: ""
+};
+
+function toMb(bytes) {
+  return (bytes / 1024 / 1024).toFixed(1);
+}
+
+/** 托盘右键菜单顶部的状态行文案；无状态时返回空串（不渲染该行） */
+function updateStatusLabel() {
+  if (updateState.status === "checking") {
+    return "正在检查更新…";
+  }
+  if (updateState.status === "downloading") {
+    const { transferred, total } = updateState;
+    if (transferred && total) {
+      return `正在下载更新 ${updateState.percent}%（${toMb(transferred)}/${toMb(total)} MB）`;
+    }
+    return `正在下载更新 ${updateState.percent}%`;
+  }
+  if (updateState.status === "downloaded") {
+    return "更新已就绪，重启后自动安装";
+  }
+  if (updateState.status === "error") {
+    return `更新失败：${updateState.message}`;
+  }
+  return "";
+}
+
+/**
+ * 刷新托盘上的更新进度（鼠标悬停托盘图标即可看到）。
+ * download-progress 触发极频繁，只在整数百分比变化时调用本函数。
+ */
+function refreshUpdateIndicator() {
+  if (!tray || tray.isDestroyed()) {
+    return;
+  }
+  const label = updateStatusLabel();
+  tray.setToolTip(label ? `牛来 · ${label}` : "牛来 · 股票桌面宠物");
+}
+
+/** 更新关键节点发系统通知，避免「点了立即更新后毫无动静」 */
+function notifyUpdate(title, body) {
+  if (!Notification.isSupported()) {
+    return;
+  }
+  try {
+    new Notification({ title, body }).show();
+  } catch (error) {
+    console.warn("[autoUpdater] notify failed:", error && error.message);
+  }
+}
+
+function resetUpdateState() {
+  updateState.status = "idle";
+  updateState.percent = 0;
+  updateState.transferred = 0;
+  updateState.total = 0;
+  updateState.message = "";
+  refreshUpdateIndicator();
+}
+
 /**
  * 自动更新（P0）：仅安装版启用。
  * 默认不自动下载——发现新版本先询问，下载完成后再询问是否重启安装。
+ * 下载期间通过托盘 tooltip / 右键菜单 / 系统通知展示进度。
  */
 function setupAutoUpdater() {
   if (!app.isPackaged) {
@@ -2219,14 +2295,52 @@ function setupAutoUpdater() {
       cancelId: 1,
       title: "发现新版本",
       message: `发现新版本 ${info.version}`,
-      detail: "下载完成后会再次提示是否重启安装，期间可继续使用当前版本。"
+      detail: "下载期间可继续使用当前版本，鼠标悬停托盘图标可查看下载进度。"
     });
     if (response === 0) {
-      autoUpdater.downloadUpdate();
+      updateState.status = "downloading";
+      updateState.percent = 0;
+      updateState.version = info.version;
+      refreshUpdateIndicator();
+      notifyUpdate(
+        "正在下载新版本",
+        `牛来 ${info.version} 正在后台下载，鼠标悬停托盘图标可查看进度。`
+      );
+      autoUpdater.downloadUpdate().catch((error) => {
+        const message = (error && error.message) || "未知错误";
+        console.warn("[autoUpdater] download failed:", message);
+        updateState.status = "error";
+        updateState.message = message;
+        refreshUpdateIndicator();
+        notifyUpdate("更新失败", `下载新版本时出错：${message}`);
+      });
+    } else {
+      resetUpdateState();
     }
   });
 
-  autoUpdater.on("update-downloaded", async () => {
+  // 下载进度：只在整数百分比变化时刷新托盘，避免高频重绘
+  autoUpdater.on("download-progress", (progress) => {
+    if (!progress) {
+      return;
+    }
+    const percent = Math.floor(progress.percent || 0);
+    updateState.status = "downloading";
+    updateState.transferred = progress.transferred || 0;
+    updateState.total = progress.total || 0;
+    if (percent === updateState.percent) {
+      return;
+    }
+    updateState.percent = percent;
+    refreshUpdateIndicator();
+  });
+
+  autoUpdater.on("update-downloaded", async (info) => {
+    updateState.status = "downloaded";
+    updateState.percent = 100;
+    updateState.version = (info && info.version) || updateState.version;
+    refreshUpdateIndicator();
+    notifyUpdate("更新已就绪", "新版本已下载完成，重启后即可使用。");
     const { response } = await dialog.showMessageBox({
       type: "info",
       buttons: ["立即重启并安装", "下次启动时安装"],
@@ -2241,8 +2355,24 @@ function setupAutoUpdater() {
     }
   });
 
+  autoUpdater.on("update-not-available", () => {
+    // 下载中 / 已就绪时的后台复查不应覆盖当前状态
+    if (updateState.status === "downloading" || updateState.status === "downloaded") {
+      return;
+    }
+    resetUpdateState();
+  });
+
   autoUpdater.on("error", (error) => {
-    console.warn("[autoUpdater]", error && error.message);
+    const message = (error && error.message) || "未知错误";
+    console.warn("[autoUpdater]", message);
+    // 后台静默检查失败只记日志；用户主动触发的下载失败必须明确告知
+    if (updateState.status === "downloading") {
+      updateState.status = "error";
+      updateState.message = message;
+      refreshUpdateIndicator();
+      notifyUpdate("更新失败", `下载新版本时出错：${message}`);
+    }
   });
 
   const check = () => {
@@ -2268,19 +2398,42 @@ function checkForUpdatesManual() {
     });
     return;
   }
+  // 下载中 / 已就绪时直接回报进度：既避免重复检查冲掉状态，也方便用户随时确认
+  if (updateState.status === "downloading") {
+    dialog.showMessageBox({
+      type: "info",
+      message: "正在下载更新",
+      detail: `新版本 ${updateState.version} 下载中（${updateState.percent}%），完成后会提示重启安装。`
+    });
+    return;
+  }
+  if (updateState.status === "downloaded") {
+    dialog.showMessageBox({
+      type: "info",
+      message: "更新已就绪",
+      detail: `新版本 ${updateState.version} 已下载完成，重启后即可安装。`
+    });
+    return;
+  }
+  updateState.status = "checking";
+  updateState.percent = 0;
+  refreshUpdateIndicator();
   autoUpdater
     .checkForUpdates()
     .then((result) => {
       const latest = result && result.updateInfo && result.updateInfo.version;
       if (!latest || latest === app.getVersion()) {
+        resetUpdateState();
         dialog.showMessageBox({
           type: "info",
           message: "当前已是最新版本",
           detail: `版本 ${app.getVersion()}`
         });
       }
+      // 检测到新版时由 update-available 接管状态（询问是否立即下载）
     })
     .catch((error) => {
+      resetUpdateState();
       dialog.showMessageBox({
         type: "warning",
         message: "检查更新失败",
