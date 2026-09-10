@@ -1,5 +1,5 @@
 {
-  "name": "stock-watcher-widget",
+  "name": "niulai-desktop-pet",
   "version": "1.0.5",
   "description": "股票桌宠",
   "author": "xuniwodecong",
@@ -10,7 +10,8 @@
     "build:renderer": "node scripts/build-renderer.js",
     "dist:win": "npm run build:renderer && electron-builder --win nsis --publish never",
     "dist:mac": "npm run build:renderer && electron-builder --mac --publish never",
-    "dist": "npm run dist:win"
+    "dist": "npm run dist:win",
+    "license-admin": "npm run build:renderer && electron tools/license-admin.js"
   },
   "build": {
     "appId": "com.trae.stockwatcher",

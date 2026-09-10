@@ -16,7 +16,7 @@ body {
 
 #root {
   width: 240px;
-  height: 300px;
+  height: 290px;
   background: transparent;
 }
 
@@ -24,6 +24,10 @@ body {
   position: relative;
   width: 100%;
   height: 100%;
+  /* 拖动交给系统 drag region：手动 setPosition 在快速拖动时，透明窗口重绘
+     跟不上会出现黑框（实测确认），系统拖动绝对顺滑。
+     形象本体（.pet-media / .cow-placeholder）单独放开 no-drag 用于点击互动，
+     所以拖窗口请从形象以外的留白或底部把手条开始。 */
   -webkit-app-region: drag;
   cursor: grab;
 }
@@ -39,7 +43,7 @@ body {
   left: 0;
   right: 0;
   top: 0;
-  height: 258px;
+  height: 265px; /* 形象底部对齐：数值越大，牛脚越贴近底部胶囊 */
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -59,6 +63,15 @@ body {
 }
 
 /* 素材（图片/动图/视频）等比缩放居中，不裁切变形（216×240 可视范围内） */
+/* 点击动作素材（pat / wag）预加载：常驻隐藏，避免点击瞬间加载延迟 */
+.pet-action-preload {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .pet-media {
   max-width: 216px;
   max-height: 240px;
@@ -67,6 +80,41 @@ body {
   display: block;
   object-fit: contain;
   filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.28));
+  /* 整窗（含形象本体）都可拖动，互动改为双击：由主进程拦截 WM_*DBLCLK 转发。
+     光标跟随容器：默认 grab、拖动中 grabbing */
+  pointer-events: auto;
+  cursor: inherit;
+  -webkit-user-drag: none;
+}
+
+/* 内置占位形象同样随整窗可拖 */
+.cow-placeholder {
+  pointer-events: auto;
+  cursor: inherit;
+  -webkit-user-drag: none;
+}
+
+/* 互动热区：整窗可拖，只在这一小块（形象上部 / 牛头）留给单击互动。
+   实测 drag region 下单击、双击、窗口消息全部收不到，只能靠 no-drag 开洞。
+   默认完全透明，鼠标移上去才淡淡亮一下，方便找到这个点 */
+.pet-tap-zone {
+  position: absolute;
+  left: 50%;
+  bottom: 130px;
+  transform: translateX(-50%);
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+  cursor: pointer;
+  background: transparent;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.pet-tap-zone:hover {
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
 }
 
 /* 表情切换时淡入（React 以 mood+素材 为 key 重建元素） */
@@ -160,20 +208,171 @@ body {
   }
 }
 
-/* ---------- 状态胶囊（no-drag，可点击刷新） ---------- */
+/* ---------- M9 非交易时段状态（待机 / 休息 / 打盹 / 睡觉） ---------- */
 
+.pet-root--awake .pet-stage {
+  animation: petStretch 4s ease-in-out infinite;
+}
+
+.pet-root--rest .pet-stage {
+  animation: petRest 5s ease-in-out infinite;
+  filter: brightness(0.96);
+}
+
+.pet-root--doze .pet-stage {
+  animation: petDoze 5.5s ease-in-out infinite;
+  opacity: 0.92;
+}
+
+.pet-root--sleep .pet-stage {
+  animation: petDoze 7s ease-in-out infinite;
+  opacity: 0.82;
+}
+
+/* 素材自带动画（视频/动图）时关闭叠加的循环动画，避免"动两遍"
+   注：交互反馈动画（--pat / --wag）定义在其后，仍然生效 */
+.pet-root--video .pet-stage {
+  animation: none;
+}
+
+@keyframes petStretch {
+  0%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+  35% {
+    transform: translateY(-6px) scale(0.97, 1.06);
+  }
+  60% {
+    transform: translateY(2px) scale(1.03, 0.97);
+  }
+}
+
+@keyframes petRest {
+  0%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+  50% {
+    transform: translateY(-3px) scale(1.01, 0.99);
+  }
+}
+
+@keyframes petDoze {
+  0%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+  50% {
+    transform: translateY(3px) scale(1.02, 0.98);
+  }
+}
+
+/* ---------- M9 点击反馈动画（放在状态动画之后，点击时优先播放） ---------- */
+
+.pet-root--pat .pet-stage {
+  animation: petPat 0.72s ease-out;
+}
+
+.pet-root--wag .pet-stage {
+  animation: petWag 0.8s ease-in-out;
+}
+
+@keyframes petPat {
+  0% {
+    transform: translateY(0) scale(1, 1);
+  }
+  22% {
+    transform: translateY(6px) scale(1.07, 0.93);
+  }
+  48% {
+    transform: translateY(-10px) scale(0.96, 1.05);
+  }
+  72% {
+    transform: translateY(2px) scale(1.02, 0.98);
+  }
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+}
+
+@keyframes petWag {
+  0% {
+    transform: translateY(0) rotate(0deg);
+  }
+  20% {
+    transform: translateY(-6px) rotate(-7deg);
+  }
+  40% {
+    transform: translateY(0) rotate(6deg);
+  }
+  60% {
+    transform: translateY(-4px) rotate(-4deg);
+  }
+  80% {
+    transform: translateY(0) rotate(3deg);
+  }
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+}
+
+/* 非交易时段状态角标 */
+.pet-state-tag {
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.5);
+  color: #e2e8f0;
+  font-size: 10px;
+  line-height: 1.6;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: speechIn 0.3s ease-out;
+}
+
+/* ---------- 状态胶囊（可点击刷新） ---------- */
+
+/* 整窗已可拖动，这里只需居中摆放；胶囊按钮本身由 JS 排除拖动/点击判定 */
 .pet-foot {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 4px;
+  bottom: 3px;
   display: flex;
+  align-items: center;
   justify-content: center;
-  -webkit-app-region: no-drag;
+  gap: 4px;
+  -webkit-app-region: drag;
+  cursor: grab;
+}
+
+.pet-foot:active {
+  cursor: grabbing;
+}
+
+/* 显式把手：提示"按住这里可以拖"，鼠标移上去会变亮 */
+.pet-grip {
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 1px 2px;
+  color: rgba(248, 250, 252, 0.45);
+  cursor: grab;
+  user-select: none;
+  transition: color 0.2s ease;
+}
+
+.pet-foot:hover .pet-grip {
+  color: rgba(248, 250, 252, 0.92);
 }
 
 .pet-chip {
   appearance: none;
+  -webkit-app-region: no-drag;
   border: none;
   cursor: pointer;
   display: inline-flex;
@@ -186,7 +385,6 @@ body {
   font-size: 11px;
   line-height: 1.5;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-  -webkit-app-region: no-drag;
   transition: background 0.2s ease, transform 0.1s ease;
   max-width: calc(100vw - 12px);
   box-sizing: border-box;
@@ -214,17 +412,18 @@ body {
   flex: none;
 }
 
-.chip-dot--happy {
-  background: #34d399;
-  box-shadow: 0 0 6px rgba(52, 211, 153, 0.9);
-}
-
-.chip-dot--sad {
+/* A 股惯例：红涨绿跌。色值与面板 .rise / .fall 保持一致 */
+.chip-dot--up {
   background: #f87171;
   box-shadow: 0 0 6px rgba(248, 113, 113, 0.9);
 }
 
-.chip-dot--idle {
+.chip-dot--down {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.9);
+}
+
+.chip-dot--flat {
   background: #94a3b8;
   box-shadow: 0 0 6px rgba(148, 163, 184, 0.9);
 }
@@ -234,7 +433,7 @@ body {
 .pet-speech {
   position: absolute;
   left: 50%;
-  bottom: 64px;
+  bottom: 56px; /* 保持在形象（底部对齐于 256px）上方的相对位置 */
   transform: translateX(-50%);
   max-width: 200px;
   padding: 6px 10px;
@@ -246,7 +445,6 @@ body {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
   z-index: 10;
   pointer-events: none;
-  -webkit-app-region: no-drag;
   animation: speechIn 0.24s ease-out;
 }
 
@@ -287,7 +485,6 @@ body {
   background: rgba(15, 23, 42, 0.94);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   z-index: 20;
-  -webkit-app-region: no-drag;
   animation: editorIn 0.18s ease-out;
 }
 

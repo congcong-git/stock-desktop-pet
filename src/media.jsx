@@ -6,18 +6,42 @@ import { loadImage, computeMask, applyMask, canvasToPngBytes } from "./lib/remov
 /**
  * 宠物素材库管理窗口（V2.1）
  * - 浏览 / 批量导入素材（图片、动图、视频），可视化素材网格
- * - 三个情绪槽位（待机 / 开心 / 沮丧）绑定与解除绑定，恢复默认
+ * - 七个形象槽位（情绪 3：待机 / 开心 / 沮丧；状态 4：开盘前 / 午休 / 打盹 / 睡觉）绑定与解除绑定，恢复默认
  * - 选中素材后可"试穿"到宠物上实时预览，也可重命名 / 删除
  * 数据源：绑定存于主进程 Data/mood-bindings.json，素材目录为 userData/mood-media
  */
 
+/**
+ * 形象槽位：group="mood" 为盈亏情绪（交易时段），group="state" 为非交易时段状态。
+ * 新增槽位只需在此追加，卡片 / 绑定按钮 / 角标 / 去背景绑定都会自动扩展。
+ */
 const MOOD_META = [
-  { key: "idle", label: "待机", desc: "行情持平 / 空仓" },
-  { key: "happy", label: "开心", desc: "今日盈利" },
-  { key: "sad", label: "沮丧", desc: "今日亏损" }
+  { key: "idle", label: "待机", desc: "行情持平 / 空仓", group: "mood" },
+  { key: "happy", label: "开心", desc: "今日盈利", group: "mood" },
+  { key: "sad", label: "沮丧", desc: "今日亏损", group: "mood" },
+  { key: "awake", label: "开盘前", desc: "伸懒腰", group: "state" },
+  { key: "rest", label: "午间休市", desc: "坐着休息", group: "state" },
+  { key: "doze", label: "收盘打盹", desc: "闭眼小憩", group: "state" },
+  { key: "sleep", label: "睡觉", desc: "周末 / 节假日", group: "state" }
 ];
 
-const MOOD_COLORS = { idle: "#38bdf8", happy: "#fbbf24", sad: "#f87171" };
+const MOOD_COLORS = {
+  idle: "#38bdf8",
+  happy: "#fbbf24",
+  sad: "#f87171",
+  awake: "#a78bfa",
+  rest: "#34d399",
+  doze: "#60a5fa",
+  sleep: "#818cf8"
+};
+
+/** 槽位分组：情绪形象与状态形象分区展示，避免 7 个卡片挤成一行 */
+const SLOT_GROUPS = [
+  { key: "mood", title: "情绪形象（按当日盈亏）" },
+  { key: "state", title: "状态形象（非交易时段）" }
+];
+
+const slotsOf = (groupKey) => MOOD_META.filter((meta) => meta.group === groupKey);
 const KIND_NAMES = { image: "图片", video: "视频" };
 
 function truncate(text, max) {
@@ -349,7 +373,7 @@ function App() {
           <span className="ml-logo">牛</span>
           <div className="ml-brand-text">
             <h1>宠物素材库</h1>
-            <p>按情绪槽位搭配形象，支持图片 / 动图 / 视频。选中素材后可试穿、绑定或管理</p>
+            <p>按情绪 / 状态槽位搭配形象，支持图片 / 动图 / 视频。选中素材后可试穿、绑定或管理</p>
           </div>
         </div>
         <div className="ml-header-actions">
@@ -362,52 +386,67 @@ function App() {
         </div>
       </header>
 
-      <section className="ml-slots">
-        {MOOD_META.map((meta) => {
-          const boundName = boundNameOf(meta.key);
-          const boundItem = items && items.find((item) => item.name === boundName);
-          return (
-            <div key={meta.key} className="ml-slot" style={{ "--accent": MOOD_COLORS[meta.key] }}>
-              <div className="ml-slot-head">
-                <span className="ml-slot-dot" />
-                <span className="ml-slot-title">{meta.label}</span>
-                <span className="ml-slot-desc">{meta.desc}</span>
-              </div>
-              <div
-                className="ml-slot-body"
-                onClick={() => {
-                  if (boundItem) {
-                    setSelectedName(boundItem.name);
-                    setDeleteArmed(false);
-                  }
-                }}
-              >
-                {boundItem ? (
-                  <MediaThumb item={boundItem} active={false} />
-                ) : (
-                  <div className="ml-slot-empty">{boundName ? "原文件已缺失" : "默认形象"}</div>
-                )}
-              </div>
-              <div className="ml-slot-foot">
-                {boundItem ? (
-                  <>
-                    <span className="ml-slot-name" title={boundItem.name}>
-                      {truncate(boundItem.name, 26)}
-                    </span>
-                    <button type="button" className="ml-btn ml-btn--tiny" onClick={() => unbindMood(meta.key)} disabled={busy}>
-                      移除
-                    </button>
-                  </>
-                ) : (
-                  <span className="ml-slot-muted">{boundName ? "原文件已被删除" : "未自定义（内置形象）"}</span>
-                )}
-              </div>
+      <div className="ml-body">
+        <section className="ml-slots">
+        {SLOT_GROUPS.map((group) => (
+          <div className="ml-slot-group" key={group.key}>
+            <div className="ml-slot-group-title">{group.title}</div>
+            <div className="ml-slot-row">
+              {slotsOf(group.key).map((meta) => {
+                const boundName = boundNameOf(meta.key);
+                const boundItem = items && items.find((item) => item.name === boundName);
+                return (
+                  <div key={meta.key} className="ml-slot" style={{ "--accent": MOOD_COLORS[meta.key] }}>
+                    <div className="ml-slot-head">
+                      <span className="ml-slot-dot" />
+                      <span className="ml-slot-title">{meta.label}</span>
+                      <span className="ml-slot-desc">{meta.desc}</span>
+                    </div>
+                    <div
+                      className="ml-slot-body"
+                      onClick={() => {
+                        if (boundItem) {
+                          setSelectedName(boundItem.name);
+                          setDeleteArmed(false);
+                        }
+                      }}
+                    >
+                      {boundItem ? (
+                        <MediaThumb item={boundItem} active={false} />
+                      ) : (
+                        <div className="ml-slot-empty">{boundName ? "原文件已缺失" : "默认形象"}</div>
+                      )}
+                    </div>
+                    <div className="ml-slot-foot">
+                      {boundItem ? (
+                        <>
+                          <span className="ml-slot-name" title={boundItem.name}>
+                            {truncate(boundItem.name, 26)}
+                          </span>
+                          <button
+                            type="button"
+                            className="ml-btn ml-btn--tiny"
+                            onClick={() => unbindMood(meta.key)}
+                            disabled={busy}
+                          >
+                            移除
+                          </button>
+                        </>
+                      ) : (
+                        <span className="ml-slot-muted">
+                          {meta.group === "state" ? "未自定义（沿用待机）" : "未自定义（内置形象）"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </section>
+          </div>
+        ))}
+        </section>
 
-      <section className="ml-grid">
+        <section className="ml-grid">
         <div className="ml-grid-head">
           <h2>全部素材</h2>
           <span className="ml-count">{items === null ? "读取中…" : `${items.length} 个`}</span>
@@ -474,7 +513,8 @@ function App() {
             })}
           </div>
         )}
-      </section>
+        </section>
+      </div>
 
       <footer className="ml-actions">
         {selectedItem ? (
@@ -489,22 +529,26 @@ function App() {
               )}
             </div>
             <div className="ml-actions-buttons">
-              {MOOD_META.map((meta) => {
-                const boundHere = bindings[meta.key] === selectedItem.name;
-                return (
-                  <button
-                    key={meta.key}
-                    type="button"
-                    className="ml-btn ml-btn--bind"
-                    style={boundHere ? { color: MOOD_COLORS[meta.key], borderColor: MOOD_COLORS[meta.key] } : undefined}
-                    disabled={boundHere || busy}
-                    title={boundHere ? `该素材已是「${meta.label}」显示` : `把该素材设为「${meta.label}」显示`}
-                    onClick={() => bindTo(meta.key)}
-                  >
-                    {boundHere ? `已设${meta.label}` : `设为${meta.label}`}
-                  </button>
-                );
-              })}
+              {SLOT_GROUPS.map((group) => (
+                <span className="ml-actions-group" key={group.key}>
+                  {slotsOf(group.key).map((meta) => {
+                    const boundHere = bindings[meta.key] === selectedItem.name;
+                    return (
+                      <button
+                        key={meta.key}
+                        type="button"
+                        className="ml-btn ml-btn--bind"
+                        style={boundHere ? { color: MOOD_COLORS[meta.key], borderColor: MOOD_COLORS[meta.key] } : undefined}
+                        disabled={boundHere || busy}
+                        title={boundHere ? `该素材已是「${meta.label}」显示` : `把该素材设为「${meta.label}」显示`}
+                        onClick={() => bindTo(meta.key)}
+                      >
+                        {boundHere ? `已设${meta.label}` : `设为${meta.label}`}
+                      </button>
+                    );
+                  })}
+                </span>
+              ))}
               <button
                 type="button"
                 className={`ml-btn ml-btn--accent${previewing === selectedItem.name ? " ml-btn--active" : ""}`}
@@ -540,7 +584,7 @@ function App() {
             </div>
           </>
         ) : (
-          <div className="ml-actions-hint">点击下方素材卡片，可设为各情绪显示 / 试穿 / 重命名 / 删除</div>
+          <div className="ml-actions-hint">点击下方素材卡片，可设为情绪或状态形象 / 试穿 / 重命名 / 删除</div>
         )}
       </footer>
 
@@ -618,22 +662,26 @@ function App() {
 
             <footer className="ml-bgpanel-foot">
               <span className="ml-bgfoot-label">保存并绑定到：</span>
-              {MOOD_META.map((meta) => {
-                const inherited = bindings[meta.key] === bgSource.name;
-                return (
-                  <button
-                    key={meta.key}
-                    type="button"
-                    className="ml-btn ml-btn--bind"
-                    style={inherited ? { color: MOOD_COLORS[meta.key], borderColor: MOOD_COLORS[meta.key] } : undefined}
-                    disabled={bgStage !== "ready" || bgSaving}
-                    title={inherited ? `原素材已是「${meta.label}」显示，保存后将自动接管` : `保存后设为「${meta.label}」显示`}
-                    onClick={() => saveBgResult(meta.key)}
-                  >
-                    {meta.label}
-                  </button>
-                );
-              })}
+              {SLOT_GROUPS.map((group) => (
+                <span className="ml-actions-group" key={group.key}>
+                  {slotsOf(group.key).map((meta) => {
+                    const inherited = bindings[meta.key] === bgSource.name;
+                    return (
+                      <button
+                        key={meta.key}
+                        type="button"
+                        className="ml-btn ml-btn--bind"
+                        style={inherited ? { color: MOOD_COLORS[meta.key], borderColor: MOOD_COLORS[meta.key] } : undefined}
+                        disabled={bgStage !== "ready" || bgSaving}
+                        title={inherited ? `原素材已是「${meta.label}」显示，保存后将自动接管` : `保存后设为「${meta.label}」显示`}
+                        onClick={() => saveBgResult(meta.key)}
+                      >
+                        {meta.label}
+                      </button>
+                    );
+                  })}
+                </span>
+              ))}
               <button
                 type="button"
                 className="ml-btn"

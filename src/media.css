@@ -160,13 +160,44 @@ body {
   border-color: #475569;
 }
 
+/* —— 中部滚动容器（顶栏 / 底部操作条固定，中间内容过高时整体滚动）—— */
+.ml-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+}
+
 /* —— 情绪槽位卡 —— */
 .ml-slots {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  padding: 14px 18px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 18px 2px;
   flex-shrink: 0;
+}
+
+/* 槽位分组：情绪形象 / 状态形象 */
+.ml-slot-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ml-slot-group-title {
+  color: #64748b;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  padding-left: 2px;
+}
+
+.ml-slot-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
 }
 
 .ml-slot {
@@ -185,7 +216,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px 8px;
+  padding: 8px 12px 6px;
 }
 
 .ml-slot-dot {
@@ -198,7 +229,7 @@ body {
 }
 
 .ml-slot-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--accent, #38bdf8);
 }
@@ -210,8 +241,8 @@ body {
 }
 
 .ml-slot-body {
-  margin: 0 14px;
-  height: 120px;
+  margin: 0 12px;
+  height: 92px;
   border-radius: 10px;
   background: #0f172a;
   overflow: hidden;
@@ -230,7 +261,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px 12px;
+  padding: 6px 12px 8px;
 }
 
 .ml-slot-name {
@@ -261,11 +292,9 @@ body {
 
 /* —— 素材网格 —— */
 .ml-grid {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 8px 18px 14px;
+  padding: 6px 18px 16px;
 }
 
 .ml-grid-head {
@@ -287,16 +316,12 @@ body {
 }
 
 .ml-cards {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  /* 固定卡宽：素材不足一行时靠左排列、不再拉伸铺满整行 */
+  grid-template-columns: repeat(auto-fill, 150px);
   gap: 10px;
   align-content: start;
   padding: 2px 2px 8px;
-  scrollbar-width: thin;
-  scrollbar-color: #334155 transparent;
 }
 
 .ml-card {
@@ -403,12 +428,12 @@ body {
 }
 
 .ml-state {
-  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 8px;
+  padding: 64px 24px;
   color: #64748b;
   font-size: 13px;
 }
@@ -469,6 +494,18 @@ body {
   margin-left: auto;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+/* 绑定按钮按情绪 / 状态分组，组间用竖线分隔 */
+.ml-actions-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ml-actions-group + .ml-actions-group {
+  padding-left: 8px;
+  border-left: 1px solid #1e293b;
 }
 
 .ml-actions-hint {
@@ -567,6 +604,7 @@ body {
   gap: 12px;
   padding: 14px 18px;
   border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
 }
 
 .ml-bgpanel-head h3 {
@@ -591,6 +629,8 @@ body {
   display: flex;
   gap: 16px;
   padding: 14px 18px;
+  /* 图片区超高时自身滚动，绝不遮住底部的保存按钮 */
+  overflow-y: auto;
 }
 
 .ml-bgcols {
@@ -616,7 +656,7 @@ body {
 /* 棋盘格：示意透明区域 */
 .ml-checker {
   flex: 1;
-  min-height: 0;
+  min-height: 220px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -693,6 +733,8 @@ body {
   padding: 12px 18px;
   border-top: 1px solid #1e293b;
   flex-wrap: wrap;
+  flex-shrink: 0;
+  background: #0f172a;
 }
 
 .ml-bgfoot-label {

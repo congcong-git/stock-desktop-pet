@@ -10,7 +10,9 @@ const distDir = path.join(rootDir, "dist");
 const CSS_FILES = [
   ["styles.css", "renderer.css"],
   ["pet.css", "pet.css"],
-  ["media.css", "media.css"]
+  ["media.css", "media.css"],
+  ["activate.css", "activate.css"],
+  ["license-admin.css", "license-admin.css"]
 ];
 
 async function build() {
@@ -58,9 +60,40 @@ async function build() {
     }
   });
 
+  // 授权激活窗口
+  await esbuild.build({
+    entryPoints: [path.join(srcDir, "activate.jsx")],
+    bundle: true,
+    outfile: path.join(distDir, "activate.js"),
+    platform: "browser",
+    format: "iife",
+    jsx: "automatic",
+    target: ["chrome108"],
+    loader: {
+      ".js": "jsx"
+    }
+  });
+
   fs.copyFileSync(path.join(srcDir, "index.html"), path.join(distDir, "index.html"));
   fs.copyFileSync(path.join(srcDir, "pet.html"), path.join(distDir, "pet.html"));
   fs.copyFileSync(path.join(srcDir, "media.html"), path.join(distDir, "media.html"));
+  fs.copyFileSync(path.join(srcDir, "activate.html"), path.join(distDir, "activate.html"));
+
+  // 授权签发可视化工具（独立窗口，不进安装包）
+  await esbuild.build({
+    entryPoints: [path.join(srcDir, "license-admin.jsx")],
+    bundle: true,
+    outfile: path.join(distDir, "license-admin.js"),
+    platform: "browser",
+    format: "iife",
+    jsx: "automatic",
+    target: ["chrome108"],
+    loader: {
+      ".js": "jsx"
+    }
+  });
+
+  fs.copyFileSync(path.join(srcDir, "license-admin.html"), path.join(distDir, "license-admin.html"));
 
   // 样式：src 为唯一源头，按映射同步到 dist（dist 下不再手工维护）
   for (const [sourceName, distName] of CSS_FILES) {

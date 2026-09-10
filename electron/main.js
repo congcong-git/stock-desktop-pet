@@ -1,4 +1,16 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, shell, Tray } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  Notification,
+  screen,
+  shell,
+  Tray
+} = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
@@ -7,21 +19,91 @@ const http = require("http");
 const zlib = require("zlib");
 const iconv = require("iconv-lite");
 const { autoUpdater } = require("electron-updater");
+const license = require("./license");
 
 // 与 package.json build.appId 保持一致：修复 Windows 任务栏按钮分组丢失
 app.setAppUserModelId("com.trae.stockwatcher");
+
+// 单实例：避免多开导致多个宠物窗口叠在一起。
+// 旧进程不退出时，新启动的代码不会生效，屏幕上看到的仍是旧窗口。
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  dialog.showErrorBox(
+    "牛来 · 股票桌面宠物",
+    "软件已经在运行中。\n\n请先在托盘图标上右键「退出」，再重新启动；\n否则看到的仍是旧版本的窗口，代码改动不会生效。"
+  );
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (petWindow && !petWindow.isDestroyed()) {
+      if (petWindow.isMinimized()) petWindow.restore();
+      petWindow.show();
+      petWindow.focus();
+    }
+  });
+}
 
 const MAX_HISTORY_DAYS = 30;
 const MAX_STOCK_CACHE = 300;
 
 // 宠物外观（情绪素材替换，V2.0）
-const MOOD_LABELS = { idle: "待机（持平）", happy: "开心（盈利）", sad: "沮丧（亏损）" };
+// 形象槽位：mood = 盈亏情绪（交易时段），state = 非交易时段状态
+const MOOD_GROUPS = {
+  mood: ["idle", "happy", "sad"],
+  state: ["awake", "rest", "doze", "sleep"]
+};
+const MOOD_LABELS = {
+  idle: "待机（持平）",
+  happy: "开心（盈利）",
+  sad: "沮丧（亏损）",
+  awake: "开盘前",
+  rest: "午间休市",
+  doze: "收盘后打盹",
+  sleep: "睡觉（休市日）"
+};
 const MEDIA_IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
 const MEDIA_VIDEO_EXTS = [".mp4", ".webm", ".mov", ".m4v"];
 const MAX_MEDIA_SIZE_MB = 300;
 
 // A 股每年固定休市的"月-日"，用于兜底交易日历（PRD 23.4）
 const DEFAULT_FIXED_HOLIDAYS = ["01-01", "05-01", "10-01", "10-02", "10-03"];
+
+// M9 陪伴感与提醒：默认配置（stockPercent=百分比，profitAmount=元，cooldownMinutes=分钟）
+const DEFAULT_COMPANION = {
+  tapFeedback: true, // 单击宠物有反应（动画 + 气泡）
+  idleState: true, // 非交易时段切换到休息 / 打盹 / 睡觉状态
+  alertsEnabled: true, // 异动提醒总开关
+  stockPercent: 3, // 单只自选/持仓涨跌幅阈值
+  profitAmount: 1000, // 当日总盈亏阈值
+  cooldownMinutes: 10, // 同一只股票同方向去重窗口
+  dailySummary: true // 收盘小结（15:00 后播报一次）
+};
+const COMPANION_LIMITS = {
+  stockPercent: [0.5, 20],
+  profitAmount: [100, 1000000],
+  cooldownMinutes: [1, 120]
+};
+
+function clampNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+/** 兼容旧配置 / 越界值：按 DEFAULT_COMPANION 的类型与范围收敛 */
+function normalizeCompanion(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const next = { ...DEFAULT_COMPANION };
+  Object.keys(DEFAULT_COMPANION).forEach((key) => {
+    const value = source[key];
+    if (typeof value === typeof DEFAULT_COMPANION[key]) next[key] = value;
+  });
+  Object.keys(COMPANION_LIMITS).forEach((key) => {
+    const [min, max] = COMPANION_LIMITS[key];
+    next[key] = clampNumber(next[key], DEFAULT_COMPANION[key], min, max);
+  });
+  return next;
+}
 
 const runtimeCache = {
   lastLiveResult: null,
@@ -81,15 +163,46 @@ function ensureRuntimeAssets() {
 
 // —— 应用设置（P0：开机自启 / 自动更新 / 首次引导）——
 const APP_CONFIG_FILE = "app-config.json";
-const DEFAULT_APP_CONFIG = { autoLaunch: false, updateCheck: true, guideSeen: false };
+// 行情刷新间隔（秒）：管理面板可自定义，范围 3～120
+const REFRESH_SECONDS_LIMITS = [3, 120];
+const DEFAULT_REFRESH_SECONDS = 10;
+const DEFAULT_APP_CONFIG = {
+  autoLaunch: false,
+  updateCheck: true,
+  guideSeen: false,
+  refreshSeconds: DEFAULT_REFRESH_SECONDS
+};
 
 function readAppConfig() {
   const raw = readJson(APP_CONFIG_FILE, {});
   return {
     autoLaunch: raw.autoLaunch === true,
     updateCheck: raw.updateCheck !== false,
-    guideSeen: raw.guideSeen === true
+    guideSeen: raw.guideSeen === true,
+    refreshSeconds: Math.round(
+      clampNumber(
+        raw.refreshSeconds,
+        DEFAULT_REFRESH_SECONDS,
+        REFRESH_SECONDS_LIMITS[0],
+        REFRESH_SECONDS_LIMITS[1]
+      )
+    ),
+    companion: normalizeCompanion(raw.companion)
   };
+}
+
+/** M9：陪伴与提醒配置（始终返回合法结构，缺字段自动补默认值） */
+function getCompanionConfig() {
+  return readAppConfig().companion;
+}
+
+function setCompanionConfig(partial) {
+  const next = normalizeCompanion({
+    ...getCompanionConfig(),
+    ...(partial && typeof partial === "object" ? partial : {})
+  });
+  writeAppConfig({ companion: next });
+  return next;
 }
 
 function writeAppConfig(next) {
@@ -257,7 +370,7 @@ async function importMediaFilesFromDialog(sourceWindow) {
 }
 
 // —— 情绪素材绑定（主进程为唯一数据源：Data/mood-bindings.json，多窗口统一同步） ——
-const MOOD_KEYS = ["idle", "happy", "sad"];
+const MOOD_KEYS = [...MOOD_GROUPS.mood, ...MOOD_GROUPS.state];
 
 function normalizeBindings(value) {
   const out = {};
@@ -424,8 +537,12 @@ function getMarketPhase(date = new Date()) {
   const minutes = date.getMinutes();
   const totalMinutes = hours * 60 + minutes;
 
-  if (totalMinutes < 9 * 60 + 30) {
+  if (totalMinutes < 9 * 60 + 15) {
     return "开盘前";
+  }
+  // 9:15 起进入集合竞价（9:15～9:25 撮合、9:25～9:30 静默），此阶段即开始拉取实时行情
+  if (totalMinutes < 9 * 60 + 30) {
+    return "集合竞价";
   }
   if (totalMinutes < 11 * 60 + 30) {
     return "上午交易";
@@ -440,7 +557,7 @@ function getMarketPhase(date = new Date()) {
 }
 
 function isLiveMarketPhase(phase) {
-  return phase === "上午交易" || phase === "下午交易";
+  return phase === "集合竞价" || phase === "上午交易" || phase === "下午交易";
 }
 
 function isSnapshotCaptureTime(date = new Date()) {
@@ -1097,7 +1214,8 @@ let petWindow = null;
 let mediaWindow = null;
 let tray = null;
 
-const PET_WINDOW = { width: 240, height: 300 };
+// 略大于形象本体（216×240）：四周留白 + 牛身（牛头热区除外）都可用于拖动
+const PET_WINDOW = { width: 240, height: 290 };
 
 /** 恢复/打开管理面板：最小化状态下先还原再聚焦（托盘入口共用） */
 function focusPanelWindow() {
@@ -1132,6 +1250,10 @@ function createTray() {
   if (!fs.existsSync(iconPath)) {
     return;
   }
+  // 授权流程可能多次触发启动，托盘保持单实例
+  if (tray && !tray.isDestroyed()) {
+    return;
+  }
   const icon = nativeImage.createFromPath(iconPath);
   tray = new Tray(icon);
   tray.setToolTip("牛来 · 股票桌面宠物");
@@ -1164,14 +1286,17 @@ function createTray() {
   });
 }
 
-/** 管理面板（V1.0 完整界面）：单实例，重复打开时聚焦已有窗口 */
-function createPanelWindow() {
+/** 管理面板（V1.0 完整界面）：单实例，重复打开时聚焦已有窗口；mode 用于直达对应区块 */
+function createPanelWindow(mode) {
   if (panelWindow && !panelWindow.isDestroyed()) {
     if (panelWindow.isMinimized()) {
       panelWindow.restore();
     }
     panelWindow.show();
     panelWindow.focus();
+    if (mode) {
+      panelWindow.webContents.send("panel:mode", mode);
+    }
     return panelWindow;
   }
 
@@ -1195,6 +1320,12 @@ function createPanelWindow() {
   window.once("ready-to-show", () => {
     window.show();
   });
+  if (mode) {
+    // 首次加载需等渲染层就绪，否则消息会被丢弃
+    window.webContents.once("did-finish-load", () => {
+      window.webContents.send("panel:mode", mode);
+    });
+  }
   window.on("closed", () => {
     if (panelWindow === window) {
       panelWindow = null;
@@ -1276,6 +1407,20 @@ function broadcastLibrary() {
   }
 }
 
+// —— 宠物窗口位置微调（V2.6）——
+// 拖动本身交给系统 drag region：手动 setPosition 在快速拖动时，透明窗口重绘
+// 跟不上会出现黑框（实测确认），系统拖动则绝对顺滑。
+// 键盘微调是一次性小位移（每帧最多一次），不存在连续重绘滞后问题。
+ipcMain.on("pet:nudge", (event, payload) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return;
+  const dx = Number(payload && payload.dx) || 0;
+  const dy = Number(payload && payload.dy) || 0;
+  if (!dx && !dy) return;
+  const [x, y] = win.getPosition();
+  win.setPosition(x + dx, y + dy);
+});
+
 /** 桌面宠物窗口（V2.0）：透明、无边框、置顶、隐藏任务栏，默认停在屏幕右下角 */
 function createPetWindow() {
   const workArea = screen.getPrimaryDisplay().workArea;
@@ -1324,6 +1469,25 @@ function createPetWindow() {
     app.quit();
   });
   petWindow = window;
+
+  // 调试工具强制独立窗口：宠物窗口只有 240x300，附着模式会把内容挤没、导致无法点击宠物
+  let devtoolsFixing = false;
+  window.webContents.on("devtools-opened", () => {
+    if (devtoolsFixing) return;
+    devtoolsFixing = true;
+    window.webContents.openDevTools({ mode: "detached" });
+    setTimeout(() => {
+      devtoolsFixing = false;
+    }, 500);
+  });
+  window.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const key = String(input.key || "").toLowerCase();
+    if (key === "f12" || (input.control && input.shift && key === "i")) {
+      event.preventDefault();
+      window.webContents.openDevTools({ mode: "detached" });
+    }
+  });
   return window;
 }
 
@@ -1434,46 +1598,55 @@ ipcMain.on("pet:open-menu", (event, state) => {
       { label: `沮丧显示：${moodDisplayName("sad")}`, enabled: false },
       { type: "separator" },
       {
-        label: "更换待机（持平）显示…",
-        click: async () => {
-          const imported = await importMoodMediaFromDialog(sourceWindow, "idle");
-          if (imported) {
-            sendCommand({ type: "mood-media-changed", mood: "idle", item: imported });
-            broadcastLibrary();
+        label: "更换情绪形象…",
+        submenu: MOOD_GROUPS.mood.map((mood) => ({
+          label: MOOD_LABELS[mood],
+          click: async () => {
+            const imported = await importMoodMediaFromDialog(sourceWindow, mood);
+            if (imported) {
+              sendCommand({ type: "mood-media-changed", mood, item: imported });
+              broadcastLibrary();
+            }
           }
-        }
+        }))
       },
       {
-        label: "更换开心（盈利）显示…",
-        click: async () => {
-          const imported = await importMoodMediaFromDialog(sourceWindow, "happy");
-          if (imported) {
-            sendCommand({ type: "mood-media-changed", mood: "happy", item: imported });
-            broadcastLibrary();
+        label: "更换状态形象（非交易时段）…",
+        submenu: MOOD_GROUPS.state.map((mood) => ({
+          label: MOOD_LABELS[mood],
+          click: async () => {
+            const imported = await importMoodMediaFromDialog(sourceWindow, mood);
+            if (imported) {
+              sendCommand({ type: "mood-media-changed", mood, item: imported });
+              broadcastLibrary();
+            }
           }
-        }
-      },
-      {
-        label: "更换沮丧（亏损）显示…",
-        click: async () => {
-          const imported = await importMoodMediaFromDialog(sourceWindow, "sad");
-          if (imported) {
-            sendCommand({ type: "mood-media-changed", mood: "sad", item: imported });
-            broadcastLibrary();
-          }
-        }
+        }))
       },
       { type: "separator" },
       {
         label: "恢复默认显示",
         submenu: [
-          { label: "待机（持平）", enabled: !!boundMedia.idle, click: () => sendCommand({ type: "mood-media-clear", mood: "idle" }) },
-          { label: "开心（盈利）", enabled: !!boundMedia.happy, click: () => sendCommand({ type: "mood-media-clear", mood: "happy" }) },
-          { label: "沮丧（亏损）", enabled: !!boundMedia.sad, click: () => sendCommand({ type: "mood-media-clear", mood: "sad" }) },
+          {
+            label: "情绪形象",
+            submenu: MOOD_GROUPS.mood.map((mood) => ({
+              label: MOOD_LABELS[mood],
+              enabled: !!boundMedia[mood],
+              click: () => sendCommand({ type: "mood-media-clear", mood })
+            }))
+          },
+          {
+            label: "状态形象",
+            submenu: MOOD_GROUPS.state.map((mood) => ({
+              label: MOOD_LABELS[mood],
+              enabled: !!boundMedia[mood],
+              click: () => sendCommand({ type: "mood-media-clear", mood })
+            }))
+          },
           { type: "separator" },
           {
             label: "全部恢复默认",
-            enabled: !!(boundMedia.idle || boundMedia.happy || boundMedia.sad),
+            enabled: MOOD_KEYS.some((mood) => !!boundMedia[mood]),
             click: () => sendCommand({ type: "mood-media-clear", mood: "__all__" })
           }
         ]
@@ -1488,32 +1661,125 @@ ipcMain.on("pet:open-menu", (event, state) => {
     ]
   };
 
+  // —— M9 陪伴与提醒子菜单 ——
+  const companion = getCompanionConfig();
+  const updateCompanion = (partial) => setCompanionConfig(partial);
+  const radioSubmenu = (label, current, options, format, onPick) => ({
+    label,
+    submenu: options.map((value) => ({
+      label: format(value),
+      type: "radio",
+      checked: current === value,
+      click: () => onPick(value)
+    }))
+  });
+
+  const companionMenu = {
+    label: "陪伴与提醒",
+    submenu: [
+      {
+        label: "单击宠物有反应",
+        type: "checkbox",
+        checked: companion.tapFeedback,
+        click: (item) => updateCompanion({ tapFeedback: item.checked })
+      },
+      {
+        label: "非交易时段状态（休息 / 打盹 / 睡觉）",
+        type: "checkbox",
+        checked: companion.idleState,
+        click: (item) => updateCompanion({ idleState: item.checked })
+      },
+      { type: "separator" },
+      {
+        label: "异动提醒",
+        type: "checkbox",
+        checked: companion.alertsEnabled,
+        click: (item) => updateCompanion({ alertsEnabled: item.checked })
+      },
+      radioSubmenu(
+        `单只涨跌幅阈值（当前 ±${companion.stockPercent}%）`,
+        companion.stockPercent,
+        [1, 2, 3, 5, 8],
+        (value) => `±${value}%`,
+        (value) => updateCompanion({ stockPercent: value })
+      ),
+      radioSubmenu(
+        `当日总盈亏阈值（当前 ±${companion.profitAmount} 元）`,
+        companion.profitAmount,
+        [500, 1000, 2000, 5000],
+        (value) => `±${value} 元`,
+        (value) => updateCompanion({ profitAmount: value })
+      ),
+      radioSubmenu(
+        `同一提醒间隔（当前 ${companion.cooldownMinutes} 分钟）`,
+        companion.cooldownMinutes,
+        [5, 10, 30],
+        (value) => `${value} 分钟`,
+        (value) => updateCompanion({ cooldownMinutes: value })
+      ),
+      { type: "separator" },
+      {
+        label: "收盘小结（15:00 后播报一次）",
+        type: "checkbox",
+        checked: companion.dailySummary,
+        click: (item) => updateCompanion({ dailySummary: item.checked })
+      }
+    ]
+  };
+
   const menu = Menu.buildFromTemplate([
     { label: "牛来 · 今日盈亏", enabled: false },
     { label: `${summary}${phase}${counts}`, enabled: false },
     { type: "separator" },
-    { label: "自选 / 持仓管理", click: () => createPanelWindow() },
-    { label: "搜索添加股票", click: () => createPanelWindow() },
-    { label: "今日快照", click: () => createPanelWindow() },
+    { label: "自选 / 持仓管理", click: () => createPanelWindow("manage") },
+    { label: "搜索添加股票", click: () => createPanelWindow("search") },
+    { label: "今日快照", click: () => createPanelWindow("snapshot") },
     { label: "打开数据目录", click: () => shell.openPath(getDataDir()) },
     { type: "separator" },
     chipDisplayMenu,
     moodDisplayMenu,
     { type: "separator" },
     {
-      label: "预览表情",
+      label: "预览形象",
       submenu: [
-        { label: "待机（持平）", click: () => sourceWindow.webContents.send("pet:set-mood", "idle") },
-        { label: "开心（盈利）", click: () => sourceWindow.webContents.send("pet:set-mood", "happy") },
-        { label: "沮丧（亏损）", click: () => sourceWindow.webContents.send("pet:set-mood", "sad") },
+        {
+          label: "情绪形象（按盈亏）",
+          submenu: MOOD_GROUPS.mood.map((key) => ({
+            label: MOOD_LABELS[key] || key,
+            // 预览情绪时清除状态预览，两者互斥
+            click: () => {
+              sourceWindow.webContents.send("pet:set-state", "auto");
+              sourceWindow.webContents.send("pet:set-mood", key);
+            }
+          }))
+        },
+        {
+          label: "状态形象（非交易时段）",
+          submenu: MOOD_GROUPS.state.map((key) => ({
+            label: MOOD_LABELS[key] || key,
+            click: () => {
+              sourceWindow.webContents.send("pet:set-mood", "auto");
+              sourceWindow.webContents.send("pet:set-state", key);
+            }
+          }))
+        },
         { type: "separator" },
-        { label: "恢复自动（按行情）", click: () => sourceWindow.webContents.send("pet:set-mood", "auto") }
+        {
+          label: "恢复自动（按行情 / 时段）",
+          click: () => {
+            sourceWindow.webContents.send("pet:set-mood", "auto");
+            sourceWindow.webContents.send("pet:set-state", "auto");
+          }
+        }
       ]
     },
+    { label: "授权信息…", click: () => showLicenseInfo(sourceWindow) },
     { type: "separator" },
     {
       label: "设置",
       submenu: [
+        companionMenu,
+        { type: "separator" },
         {
           label: "开机自启",
           type: "checkbox",
@@ -1694,10 +1960,45 @@ ipcMain.handle("app:set-guide-seen", () => {
   return buildAppConfigPayload();
 });
 
+// 行情刷新间隔（秒）：面板可自定义，越界自动收敛到 3～120
+ipcMain.handle("app:set-refresh-seconds", (_event, seconds) => {
+  const [min, max] = REFRESH_SECONDS_LIMITS;
+  const value = Math.round(clampNumber(seconds, DEFAULT_REFRESH_SECONDS, min, max));
+  writeAppConfig({ refreshSeconds: value });
+  return buildAppConfigPayload();
+});
+
 ipcMain.handle("app:check-updates", () => {
   checkForUpdatesManual();
   return { ok: true };
 });
+
+// M9：陪伴与提醒设置（面板 / 右键菜单共用）
+ipcMain.handle("app:set-companion", (_event, partial) => {
+  const next = setCompanionConfig(partial);
+  return buildAppConfigPayload();
+});
+
+// M9：异动提醒 / 收盘小结的系统通知（去重与免打扰由渲染层判断）
+ipcMain.handle("notify:alert", (_event, payload) => {
+  if (!Notification.isSupported()) {
+    return { ok: false, reason: "unsupported" };
+  }
+  const title = payload && payload.title ? String(payload.title) : "牛来提醒";
+  const body = payload && payload.body ? String(payload.body) : "";
+  try {
+    const notification = new Notification({ title, body });
+    notification.show();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error.message };
+  }
+});
+
+// 宠物窗口拖动沿用系统 drag region（整窗，形象本体除外 —— 它要留给点击互动）。
+// 曾尝试"渲染层判定拖动 / 点击 + 主进程 setPosition"的手动拖动方案，可实现整窗
+// （含形象本体）拖动，但透明窗口在快速拖动时重绘跟不上、会出现黑框，故放弃，
+// 只保留键盘微调（pet:nudge）。
 
 ipcMain.handle("stocks:search", async (_, keyword) => {
   const results = await searchStocks(keyword);
@@ -1822,7 +2123,35 @@ ipcMain.handle("holding:remove", async (_, code) => {
   return { ok: true, holdings: nextHoldings };
 });
 
+// —— 离线授权 IPC ——
+ipcMain.handle("license:status", async () => {
+  return license.getStatus();
+});
+
+ipcMain.handle("license:info", async () => {
+  const status = license.getStatus();
+  return status.ok ? { ok: true, ...status.info } : { ok: false };
+});
+
+ipcMain.handle("license:activate", async (_event, code) => {
+  const result = license.activate(code);
+  // 激活成功后延迟启动主体：先让 IPC 结果顺利回传给激活窗口
+  if (result.ok) {
+    setTimeout(() => startActivatedApp(), 80);
+  }
+  return result;
+});
+
+ipcMain.handle("license:copy-machine-id", async (_event, machineId) => {
+  clipboard.writeText(String(machineId || license.getMachineId()));
+  return true;
+});
+
 ipcMain.handle("market:refresh", async () => {
+  // 授权兜底校验：未授权时不返回任何行情数据，改渲染层也拿不到数据
+  if (!license.getStatus().ok) {
+    return null;
+  }
   return refreshMarket();
 });
 
@@ -1958,17 +2287,126 @@ function checkForUpdatesManual() {
     });
 }
 
-app.whenReady().then(() => {
-  ensureDataFiles();
+/* ===== 离线授权：未激活只显示激活窗口，不启动宠物主体 ===== */
+let activateWindow = null;
+let licenseWatchdog = null;
+let mainAppStarted = false;
+
+/** 授权信息弹窗（右键菜单入口） */
+function showLicenseInfo(sourceWindow) {
+  const status = license.getStatus();
+  if (!status.ok) {
+    dialog.showMessageBox(sourceWindow || null, {
+      type: "warning",
+      title: "未激活",
+      message: "当前尚未激活",
+      detail: `机器码：${status.machineId}\n状态：${license.reasonText(status.reason)}`
+    });
+    createActivateWindow();
+    return;
+  }
+  const { owner, activatedAt, permanent } = status.info;
+  dialog.showMessageBox(sourceWindow || null, {
+    type: "info",
+    title: "授权信息",
+    message: `已授权给：${owner}`,
+    detail: [
+      `机器码：${status.machineId}`,
+      `激活时间：${new Date(activatedAt).toLocaleString()}`,
+      `有效期：${permanent ? "永久有效" : "以签发记录为准"}`
+    ].join("\n")
+  });
+}
+
+/** 未激活时显示的唯一窗口 */
+function createActivateWindow() {
+  if (activateWindow && !activateWindow.isDestroyed()) {
+    activateWindow.show();
+    activateWindow.focus();
+    return activateWindow;
+  }
+  const window = new BrowserWindow({
+    width: 520,
+    height: 600,
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    title: "牛来 · 授权激活",
+    backgroundColor: "#0f172a",
+    autoHideMenuBar: true,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+  window.loadFile(path.join(__dirname, "..", "dist", "activate.html"));
+  window.once("ready-to-show", () => window.show());
+  window.on("closed", () => {
+    if (activateWindow === window) {
+      activateWindow = null;
+    }
+  });
+  activateWindow = window;
+  return window;
+}
+
+/** 授权通过后启动宠物主体（幂等） */
+function startActivatedApp() {
+  if (activateWindow && !activateWindow.isDestroyed()) {
+    activateWindow.close();
+  }
+  if (mainAppStarted) {
+    return;
+  }
+  mainAppStarted = true;
   createPetWindow();
   createTray();
   startSnapshotGuard();
   syncAutoLaunchOnStart();
   setupAutoUpdater();
+  startLicenseWatchdog();
+}
+
+/** 运行期复核：授权一旦失效立即收回功能，回到激活窗口 */
+function startLicenseWatchdog() {
+  if (licenseWatchdog) {
+    return;
+  }
+  licenseWatchdog = setInterval(() => {
+    if (license.getStatus().ok) {
+      return;
+    }
+    if (petWindow && !petWindow.isDestroyed()) petWindow.close();
+    if (panelWindow && !panelWindow.isDestroyed()) panelWindow.close();
+    if (mediaWindow && !mediaWindow.isDestroyed()) mediaWindow.close();
+    createActivateWindow();
+  }, 30 * 60 * 1000);
+}
+
+app.whenReady().then(() => {
+  const licenseStatus = license.getStatus();
+  console.log(
+    `[niulai] start v${app.getVersion()} ${new Date().toLocaleTimeString()} license=${licenseStatus.ok ? "activated" : "missing"}`
+  );
+  ensureDataFiles();
+  if (licenseStatus.ok) {
+    startActivatedApp();
+  } else {
+    // 未激活：只显示激活窗口 + 托盘兜底，不创建宠物、不刷新行情
+    createActivateWindow();
+    createTray();
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createPetWindow();
+      if (license.getStatus().ok) {
+        createPetWindow();
+      } else {
+        createActivateWindow();
+      }
     }
   });
 });

@@ -78,8 +78,17 @@ function getTrendText(trend) {
 }
 
 function isLiveMarketPhase(phase) {
-  return phase === "上午交易" || phase === "下午交易";
+  return phase === "集合竞价" || phase === "上午交易" || phase === "下午交易";
 }
+
+const REFRESH_PRESETS = [5, 10, 15, 30];
+const REFRESH_LIMITS = [3, 120];
+const MARKET_LABELS = { sh: "沪", sz: "深", bj: "北" };
+const LIST_HINTS = {
+  search: "输入名称或代码，可直接加入自选 / 持仓",
+  watch: "涨幅与较开盘价涨跌幅",
+  hold: "持股数、成本价与单只今日盈亏"
+};
 
 function formatSnapshot(snapshot) {
   if (!snapshot) {
@@ -270,10 +279,17 @@ function App() {
   const [appConfig, setAppConfig] = useState(null);
   const [guideOpen, setGuideOpen] = useState(false);
   const [guideAutoLaunch, setGuideAutoLaunch] = useState(false);
+  const [activeTable, setActiveTable] = useState("watch"); // 搜索 / 自选股 / 持仓股 分栏
+  const [snapshotFlash, setSnapshotFlash] = useState(false); // 快照区高亮提示
+  const [intervalDraft, setIntervalDraft] = useState("10"); // 刷新间隔输入框草稿
+  const searchInputRef = useRef(null);
   const timerRef = useRef(null);
   const marketStateRef = useRef(marketState);
+  const refreshSecondsRef = useRef(10);
+  const bootstrappedRef = useRef(false);
 
   marketStateRef.current = marketState;
+  refreshSecondsRef.current = Number(appConfig?.refreshSeconds) || 10;
 
   const watchlistCount = watchlist.length;
   const holdingCount = holdings.length;
@@ -282,6 +298,12 @@ function App() {
   const watchCodes = useMemo(() => new Set(watchlist.map((item) => item.code)), [watchlist]);
   const holdingCodes = useMemo(() => new Set(holdings.map((item) => item.code)), [holdings]);
   const networkError = Boolean(marketState.networkError);
+  const firstQuoteTime = useMemo(() => {
+    const firstQuote =
+      marketState.watchlistRows.find((row) => row.quote)?.quote ||
+      marketState.holdingRows.find((row) => row.quote)?.quote;
+    return firstQuote ? formatQuoteTime(firstQuote.latestTime) : "--";
+  }, [marketState.watchlistRows, marketState.holdingRows]);
 
   async function loadBootstrap() {
     const bootstrap = await window.stockWatcher.getBootstrap();
@@ -297,6 +319,9 @@ function App() {
 
     const config = bootstrap.appConfig || null;
     setAppConfig(config);
+    if (config) {
+      setIntervalDraft(String(config.refreshSeconds || 10));
+    }
     if (config && !config.guideSeen) {
       setGuideOpen(true);
       setGuideAutoLaunch(config.autoLaunchEnabled === true);
@@ -340,10 +365,11 @@ function App() {
     }
   }
 
-  // PRD 12.1：刷新时间对齐到整 10 秒，而非"启动后每 10 秒"
+  // PRD 12.1：刷新时间对齐到整间隔（默认 10 秒，面板可自定义），而非"启动后每 N 秒"
   function scheduleAlignedRefresh() {
     window.clearTimeout(timerRef.current);
-    const delay = 10000 - (Date.now() % 10000 || 10000);
+    const interval = Math.max(REFRESH_LIMITS[0], refreshSecondsRef.current) * 1000;
+    const delay = interval - (Date.now() % interval);
     timerRef.current = window.setTimeout(async () => {
       await refreshMarket(false);
       if (!isLiveMarketPhase(marketStateRef.current.marketPhase)) {
@@ -352,6 +378,44 @@ function App() {
       scheduleAlignedRefresh();
     }, delay);
   }
+
+  // 配置变更（本面板 / 宠物右键菜单）即时同步，并按新间隔重建定时器
+  useEffect(() => {
+    return window.stockWatcher.onAppConfigChanged((config) => {
+      setAppConfig(config);
+      setIntervalDraft(String((config && config.refreshSeconds) || 10));
+    });
+  }, []);
+
+  // 宠物右键菜单直达：搜索添加股票 / 自选持仓管理 / 今日快照
+  useEffect(() => {
+    if (typeof window.stockWatcher.onPanelMode !== "function") {
+      return undefined;
+    }
+
+    return window.stockWatcher.onPanelMode((mode) => {
+      if (mode === "search") {
+        setActiveTable("search");
+        window.setTimeout(() => searchInputRef.current?.focus(), 80);
+        return;
+      }
+      if (mode === "manage") {
+        setActiveTable("watch");
+        return;
+      }
+      if (mode === "snapshot") {
+        setSnapshotFlash(true);
+        window.setTimeout(() => setSnapshotFlash(false), 1700);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!bootstrappedRef.current) {
+      return;
+    }
+    scheduleAlignedRefresh();
+  }, [appConfig?.refreshSeconds]);
 
   useEffect(() => {
     let active = true;
@@ -365,6 +429,7 @@ function App() {
         if (!active) {
           return;
         }
+        bootstrappedRef.current = true;
         scheduleAlignedRefresh();
       } catch (error) {
         setStatusMessage(`初始化失败：${error.message}`);
@@ -513,126 +578,316 @@ function App() {
     }
   }
 
+  // 刷新间隔：越界自动收敛到 3～120 秒，保存后主进程会广播给所有窗口
+  async function applyRefreshSeconds(seconds) {
+    const [min, max] = REFRESH_LIMITS;
+    const value = Math.min(max, Math.max(min, Math.round(Number(seconds) || refreshSecondsRef.current)));
+    setIntervalDraft(String(value));
+    try {
+      const config = await window.stockWatcher.setRefreshSeconds(value);
+      setAppConfig(config);
+      setStatusMessage(`刷新间隔已设为每 ${value} 秒`);
+    } catch (error) {
+      setStatusMessage(`刷新间隔设置失败：${error.message}`);
+    }
+  }
+
   return (
     <div className={classNames("app-shell", themeClass)}>
       <div className="app-header">
-        <div>
+        <div className="header-main">
           <div className="eyebrow">股票桌宠小组件</div>
           <h1>实时盯盘与今日盈亏总览</h1>
-          <p>搜索股票、维护自选与持仓，并在桌面端持续查看 A 股状态。</p>
         </div>
         <div className="status-panel">
           <div className="chip-row">
             <span className="status-chip">{marketState.marketPhase}</span>
+            <span className={classNames("status-chip", marketState.isLive ? "live" : "muted")}>
+              {marketState.isLive ? "实时行情" : "快照恢复"}
+            </span>
             {networkError ? <span className="status-chip warn">网络异常</span> : null}
             {!isTradingDay ? <span className="status-chip muted">非交易日</span> : null}
           </div>
           <div className="status-meta">
-            最近刷新：{marketState.refreshedAt ? new Date(marketState.refreshedAt).toLocaleString("zh-CN") : "--"}
-          </div>
-          <div className="status-meta">
-            持仓 {holdingCount} 只 / 自选 {watchlistCount} 只
+            刷新于 {marketState.refreshedAt ? new Date(marketState.refreshedAt).toLocaleTimeString("zh-CN") : "--"}
+            <em className="dot" />
+            持仓 {holdingCount} / 自选 {watchlistCount}
             {marketLoading ? " · 刷新中" : ""}
           </div>
         </div>
+
+        <div className="interval-control">
+          <span className="interval-label">刷新间隔</span>
+          <div className="segmented small">
+            {REFRESH_PRESETS.map((seconds) => (
+              <button
+                type="button"
+                key={seconds}
+                className={classNames(Number(appConfig?.refreshSeconds) === seconds && "active")}
+                onClick={() => applyRefreshSeconds(seconds)}
+              >
+                {seconds}s
+              </button>
+            ))}
+          </div>
+          <div className="interval-input">
+            <input
+              type="number"
+              min={REFRESH_LIMITS[0]}
+              max={REFRESH_LIMITS[1]}
+              value={intervalDraft}
+              onChange={(event) => setIntervalDraft(event.target.value)}
+              onBlur={() => applyRefreshSeconds(intervalDraft)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+            <span>秒</span>
+          </div>
+          <span className="section-hint">交易日 9:15 起自动刷新</span>
+        </div>
       </div>
 
-      <div className="grid-layout">
-        <section className="card search-card">
+      <div className="main-row">
+        <section className="card list-card">
           <div className="section-title">
-            <div>
-              <h2>股票搜索</h2>
-              <span>支持名称和代码模糊搜索，输入后自动检索。</span>
+            <div className="segmented">
+              <button
+                type="button"
+                className={classNames(activeTable === "search" && "active")}
+                onClick={() => setActiveTable("search")}
+              >
+                搜索
+              </button>
+              <button
+                type="button"
+                className={classNames(activeTable === "watch" && "active")}
+                onClick={() => setActiveTable("watch")}
+              >
+                自选股 <em>{watchlistCount}</em>
+              </button>
+              <button
+                type="button"
+                className={classNames(activeTable === "hold" && "active")}
+                onClick={() => setActiveTable("hold")}
+              >
+                持仓股 <em>{holdingCount}</em>
+              </button>
             </div>
-            <div className="inline-count">{searchLoading ? "搜索中..." : `结果 ${searchResults.length} 条`}</div>
+            <span className="section-hint">{LIST_HINTS[activeTable]}</span>
           </div>
 
-          <div className="search-bar">
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="输入股票名称或代码，例如：中科、603019"
-            />
-          </div>
+          {activeTable === "search" ? (
+            <>
+              <div className="search-bar">
+                <span className="search-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="M20 20l-3.6-3.6" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <input
+                  ref={searchInputRef}
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="输入股票名称或代码，例如：中科、603019"
+                />
+                {query ? (
+                  <button
+                    type="button"
+                    className="search-clear"
+                    title="清空搜索"
+                    onClick={() => {
+                      setQuery("");
+                      searchInputRef.current?.focus();
+                    }}
+                  >
+                    ✕
+                  </button>
+                ) : null}
+              </div>
 
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>序号</th>
-                  <th>股票名称</th>
-                  <th>股票代码</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
+              <div className={classNames("table-wrap", searchResults.length === 0 && "is-empty")}>
                 {searchResults.length === 0 ? (
-                  <tr>
-                    <td colSpan="4" className="empty-cell">
-                      {query.trim() ? "暂无匹配结果" : "请输入股票名称或代码"}
-                    </td>
-                  </tr>
+                  <div className="search-empty">
+                    <div className="search-empty-title">
+                      {searchLoading ? "搜索中..." : query.trim() ? "暂无匹配结果" : "输入名称或代码开始搜索"}
+                    </div>
+                    <div className="search-empty-hint">
+                      {query.trim() ? "换个关键词试试，支持名称 / 代码 / 拼音首字母" : "试试：600519 / 茅台 / 中科曙光"}
+                    </div>
+                  </div>
                 ) : (
-                  searchResults.map((item, index) => {
-                    const inWatchlist = watchCodes.has(item.code);
-                    const inHoldings = holdingCodes.has(item.code);
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>股票名称</th>
+                        <th>市场</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {searchResults.map((item) => {
+                        const inWatchlist = watchCodes.has(item.code);
+                        const inHoldings = holdingCodes.has(item.code);
 
-                    return (
-                      <tr key={item.code}>
-                        <td>{index + 1}</td>
-                        <td>
-                          {item.name}
-                          {inWatchlist || inHoldings ? (
-                            <span className="tag-row">
-                              {inWatchlist ? <em className="tag tag-watch">自选</em> : null}
-                              {inHoldings ? <em className="tag tag-hold">持仓</em> : null}
-                            </span>
-                          ) : null}
+                        return (
+                          <tr key={item.code}>
+                            <td>
+                              <div className="stock-name">
+                                {item.name}
+                                {inWatchlist || inHoldings ? (
+                                  <span className="tag-row">
+                                    {inWatchlist ? <em className="tag tag-watch">自选</em> : null}
+                                    {inHoldings ? <em className="tag tag-hold">持仓</em> : null}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="stock-code">{item.code}</div>
+                            </td>
+                            <td>
+                              <em className="market-tag">{MARKET_LABELS[item.market] || "—"}</em>
+                            </td>
+                            <td>
+                              <div className="action-group">
+                                <button
+                                  className="ghost-btn"
+                                  disabled={inWatchlist}
+                                  onClick={() => handleAddWatchlist(item)}
+                                >
+                                  {inWatchlist ? "已加入自选" : "加入自选"}
+                                </button>
+                                <button className="primary-btn" onClick={() => openAddHoldingModal(item)}>
+                                  {inHoldings ? "修改持仓" : "加入持仓"}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </>
+          ) : null}
+
+          {activeTable === "watch" ? (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>股票名称</th>
+                    <th>股票代码</th>
+                    <th>当前价</th>
+                    <th>当前涨幅</th>
+                    <th>较开盘价涨跌幅</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {marketState.watchlistRows.length === 0 ? (
+                    <tr>
+                      <td colSpan="7" className="empty-cell">
+                        暂无自选股
+                      </td>
+                    </tr>
+                  ) : (
+                    marketState.watchlistRows.map((row) => (
+                      <tr key={row.code}>
+                        <td>{row.name}</td>
+                        <td>{row.code}</td>
+                        <td>{row.quote ? formatPrice(row.quote.currentPrice) : "--"}</td>
+                        <td className={getValueTone(row.quote ? row.quote.changePercent : null)}>
+                          {row.quote ? formatPercent(row.quote.changePercent) : "--"}
                         </td>
-                        <td>{item.code}</td>
+                        <td className={getValueTone(row.quote ? row.quote.openChangePercent : null)}>
+                          {row.quote ? formatPercent(row.quote.openChangePercent) : "--"}
+                        </td>
+                        <td className={classNames("status-text", row.error && "stale-text")}>{row.error || "正常"}</td>
+                        <td>
+                          <button className="danger-btn" onClick={() => handleRemoveWatchlist(row)}>
+                            删除
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          {activeTable === "hold" ? (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>股票名称</th>
+                    <th>股票代码</th>
+                    <th>当前价</th>
+                    <th>当前涨幅</th>
+                    <th>开盘涨跌</th>
+                    <th>持股数</th>
+                    <th>今日盈亏</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {marketState.holdingRows.length === 0 ? (
+                    <tr>
+                      <td colSpan="8" className="empty-cell">
+                        暂无持仓股
+                      </td>
+                    </tr>
+                  ) : (
+                    marketState.holdingRows.map((row) => (
+                      <tr key={row.code}>
+                        <td>{row.name}</td>
+                        <td>{row.code}</td>
+                        <td>{row.quote ? formatPrice(row.quote.currentPrice) : "--"}</td>
+                        <td className={getValueTone(row.quote ? row.quote.changePercent : null)}>
+                          {row.quote ? formatPercent(row.quote.changePercent) : "--"}
+                        </td>
+                        <td className={getValueTone(row.quote ? row.quote.openChangePercent : null)}>
+                          {row.quote ? formatPercent(row.quote.openChangePercent) : "--"}
+                        </td>
+                        <td>{row.quantity}</td>
+                        <td className={getValueTone(row.dailyProfit)}>{formatCurrency(row.dailyProfit)}</td>
                         <td>
                           <div className="action-group">
-                            <button
-                              className="ghost-btn"
-                              disabled={inWatchlist}
-                              onClick={() => handleAddWatchlist(item)}
-                            >
-                              {inWatchlist ? "已加入自选" : "加入自选"}
+                            <button className="ghost-btn" onClick={() => openEditHoldingModal(row)}>
+                              编辑
                             </button>
-                            <button className="primary-btn" onClick={() => openAddHoldingModal(item)}>
-                              {inHoldings ? "修改持仓" : "加入持仓"}
+                            <button className="danger-btn" onClick={() => handleRemoveHolding(row)}>
+                              删除
                             </button>
                           </div>
                         </td>
                       </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
         </section>
 
-        <section className="card summary-card">
+        <aside className="card summary-card">
           <div className="section-title">
-            <div>
-              <h2>今日盈亏</h2>
-              <span>根据持仓股“当前价 - 昨收价”计算当日盈亏。</span>
-            </div>
+            <h2>今日盈亏</h2>
             <div className={classNames("profit-status", themeClass)}>{marketState.profitStatus}</div>
           </div>
 
           <div className="summary-main">
             <div className={classNames("profit-value", getValueTone(marketState.totalProfit))}>{formatCurrency(marketState.totalProfit)}</div>
-            <div className="summary-metrics">
-              <div className="metric-card">
-                <span>自选股</span>
-                <strong>{watchlistCount}</strong>
-              </div>
-              <div className="metric-card">
-                <span>持仓股</span>
-                <strong>{holdingCount}</strong>
-              </div>
+            <div className="profit-sub">
+              今日持仓浮动
+              <em className="dot" />
+              自选 {watchlistCount} · 持仓 {holdingCount}
             </div>
           </div>
 
@@ -653,188 +908,55 @@ function App() {
               ))}
             </div>
           ) : null}
-        </section>
+
+          <div className={classNames("snapshot-mini", snapshotFlash && "snapshot-flash")}>
+            <div className="snapshot-line">
+              <span>上午 11:30</span>
+              <b className={getValueTone(snapshotInfo.today.morning?.profit ?? null)}>
+                {formatSnapshot(snapshotInfo.today.morning)}
+              </b>
+            </div>
+            <div className="snapshot-line">
+              <span>下午 15:00</span>
+              <b className={getValueTone(snapshotInfo.today.afternoon?.profit ?? null)}>
+                {formatSnapshot(snapshotInfo.today.afternoon)}
+              </b>
+            </div>
+            <div className="snapshot-line">
+              <span>展示来源</span>
+              <b>
+                {marketState.isLive
+                  ? "实时行情"
+                  : marketState.snapshotDate
+                    ? `${marketState.snapshotDate} ${marketState.snapshotTime}`
+                    : snapshotInfo.restored
+                      ? `${snapshotInfo.restored.date} ${snapshotInfo.restored.time}`
+                      : "暂无快照"}
+              </b>
+            </div>
+            <div className="snapshot-line">
+              <span>快照写入</span>
+              <em>{formatSavedAt(snapshotInfo.today.afternoon?.savedAt || snapshotInfo.today.morning?.savedAt)}</em>
+            </div>
+            <div className="snapshot-line">
+              <span>最近行情</span>
+              <em>{firstQuoteTime}</em>
+            </div>
+            <div className="snapshot-actions">
+              <span className={classNames("source-chip", marketState.isLive ? "live" : "restored")}>
+                {marketState.isLive ? "实时行情" : "快照恢复"}
+              </span>
+              <button
+                className="ghost-btn"
+                title={dataDir ? `本地数据目录：${dataDir}` : "打开本地数据目录"}
+                onClick={() => window.stockWatcher.openDataDir()}
+              >
+                打开数据目录
+              </button>
+            </div>
+          </div>
+        </aside>
       </div>
-
-      <div className="grid-layout secondary">
-        <section className="card">
-          <div className="section-title">
-            <div>
-              <h2>自选股</h2>
-              <span>展示当前涨幅与较开盘价涨跌幅。</span>
-            </div>
-          </div>
-
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>序号</th>
-                  <th>股票名称</th>
-                  <th>股票代码</th>
-                  <th>当前价</th>
-                  <th>当前涨幅</th>
-                  <th>较开盘价涨跌幅</th>
-                  <th>状态</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {marketState.watchlistRows.length === 0 ? (
-                  <tr>
-                    <td colSpan="8" className="empty-cell">
-                      暂无自选股
-                    </td>
-                  </tr>
-                ) : (
-                  marketState.watchlistRows.map((row) => (
-                    <tr key={row.code}>
-                      <td>{row.index}</td>
-                      <td>{row.name}</td>
-                      <td>{row.code}</td>
-                      <td>{row.quote ? formatPrice(row.quote.currentPrice) : "--"}</td>
-                      <td className={getValueTone(row.quote ? row.quote.changePercent : null)}>
-                        {row.quote ? formatPercent(row.quote.changePercent) : "--"}
-                      </td>
-                      <td className={getValueTone(row.quote ? row.quote.openChangePercent : null)}>
-                        {row.quote ? formatPercent(row.quote.openChangePercent) : "--"}
-                      </td>
-                      <td className={classNames("status-text", row.error && "stale-text")}>{row.error || "正常"}</td>
-                      <td>
-                        <button className="danger-btn" onClick={() => handleRemoveWatchlist(row)}>
-                          删除
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section className="card">
-          <div className="section-title">
-            <div>
-              <h2>持仓股</h2>
-              <span>支持编辑持股数和成本价，并计算单只股票今日盈亏。</span>
-            </div>
-          </div>
-
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>序号</th>
-                  <th>股票名称</th>
-                  <th>股票代码</th>
-                  <th>当前价</th>
-                  <th>当前涨幅</th>
-                  <th>开盘涨跌</th>
-                  <th>持股数</th>
-                  <th>今日盈亏</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {marketState.holdingRows.length === 0 ? (
-                  <tr>
-                    <td colSpan="9" className="empty-cell">
-                      暂无持仓股
-                    </td>
-                  </tr>
-                ) : (
-                  marketState.holdingRows.map((row) => (
-                    <tr key={row.code}>
-                      <td>{row.index}</td>
-                      <td>{row.name}</td>
-                      <td>{row.code}</td>
-                      <td>{row.quote ? formatPrice(row.quote.currentPrice) : "--"}</td>
-                      <td className={getValueTone(row.quote ? row.quote.changePercent : null)}>
-                        {row.quote ? formatPercent(row.quote.changePercent) : "--"}
-                      </td>
-                      <td className={getValueTone(row.quote ? row.quote.openChangePercent : null)}>
-                        {row.quote ? formatPercent(row.quote.openChangePercent) : "--"}
-                      </td>
-                      <td>{row.quantity}</td>
-                      <td className={getValueTone(row.dailyProfit)}>{formatCurrency(row.dailyProfit)}</td>
-                      <td>
-                        <button className="ghost-btn" onClick={() => openEditHoldingModal(row)}>
-                          编辑持仓
-                        </button>
-                        <button className="danger-btn" onClick={() => handleRemoveHolding(row)}>
-                          删除
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
-
-      <section className="card footer-card">
-        <div className="section-title">
-          <div>
-            <h2>市场状态快照</h2>
-            <span>每个交易日上午 11:30 与下午 15:00 自动保存，非交易时间自动恢复最近一次状态。</span>
-          </div>
-          <div className={classNames("source-chip", marketState.isLive ? "live" : "restored")}>
-            {marketState.isLive ? "实时行情" : "快照恢复"}
-          </div>
-        </div>
-
-        <div className="snapshot-grid">
-          <div className="snapshot-cell">
-            <div className="footer-label">上午 11:30</div>
-            <div className={classNames("footer-value", getValueTone(snapshotInfo.today.morning?.profit ?? null))}>
-              {formatSnapshot(snapshotInfo.today.morning)}
-            </div>
-            <div className="footer-sub">{formatSavedAt(snapshotInfo.today.morning?.savedAt)}</div>
-          </div>
-          <div className="snapshot-cell">
-            <div className="footer-label">下午 15:00</div>
-            <div className={classNames("footer-value", getValueTone(snapshotInfo.today.afternoon?.profit ?? null))}>
-              {formatSnapshot(snapshotInfo.today.afternoon)}
-            </div>
-            <div className="footer-sub">{formatSavedAt(snapshotInfo.today.afternoon?.savedAt)}</div>
-          </div>
-          <div className="snapshot-cell">
-            <div className="footer-label">当前展示来源</div>
-            <div className="footer-value">
-              {marketState.isLive
-                ? "实时行情"
-                : marketState.snapshotDate
-                  ? `${marketState.snapshotDate} ${marketState.snapshotTime}`
-                  : snapshotInfo.restored
-                    ? `${snapshotInfo.restored.date} ${snapshotInfo.restored.time}`
-                    : "暂无快照"}
-            </div>
-            <div className="footer-sub">最近行情：{(() => {
-              const firstQuote =
-                marketState.watchlistRows.find((row) => row.quote)?.quote ||
-                marketState.holdingRows.find((row) => row.quote)?.quote;
-              return firstQuote ? formatQuoteTime(firstQuote.latestTime) : "--";
-            })()}</div>
-          </div>
-          <div className="snapshot-cell">
-            <div className="footer-label">刷新节奏</div>
-            <div className="footer-value">启动立即刷新</div>
-            <div className="footer-sub">之后对齐到每 10 秒</div>
-          </div>
-        </div>
-
-        <div className="footer-bottom">
-          <span className="footer-sub">
-            本地数据目录：{dataDir || "--"}（watchlist / holdings / daily-status 均为 JSON 持久化）
-          </span>
-          <button className="ghost-btn" onClick={() => window.stockWatcher.openDataDir()}>
-            打开数据目录
-          </button>
-        </div>
-      </section>
 
       {holdingModalOpen ? (
         <div className="modal-backdrop">
