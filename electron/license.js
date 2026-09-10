@@ -43,6 +43,28 @@ MCowBQYDK2VwAyEANMV8ipv5ru2kUqCP1s+jFB5gjfVny0T6PZuuFUIVpjA=
 const LICENSE_FILE_NAME = "license.dat";
 const CLOCK_SKEW_TOLERANCE_MS = 24 * 60 * 60 * 1000; // 允许的系统时间回拨容差
 
+/* ===== 授权校验总开关 =====
+ * true  = 启用离线授权：未激活只显示激活窗口，不创建宠物、不刷新行情
+ * false = 关闭校验：启动即完整可用（免费期 / 尚未准备收费时）
+ *
+ * 为什么不做成 userData 下的运行时配置文件：
+ * 授权文件就在同一个目录，用户改一行 JSON 即可绕过，
+ * 签名校验与机器绑定会全部失去意义。所以开关烘进安装包，
+ * 切换需要改这里并重新打包发版（发版本来就要走一次 Release 流程）。
+ *
+ * 开发模式（npm start，未打包）默认放行，避免调试被激活窗拦住；
+ * 需要调试激活流程时：NIULAI_LICENSE=on npm start
+ */
+const LICENSE_ENFORCED = false;
+
+/** 当前是否执行授权校验：发布版只认构建常量，开发模式可用环境变量临时打开 */
+function isEnforced() {
+  if (app.isPackaged) {
+    return LICENSE_ENFORCED;
+  }
+  return String(process.env.NIULAI_LICENSE || "").trim().toLowerCase() === "on";
+}
+
 // 硬件厂商常见的占位值，不能作为指纹依据
 const INVALID_FINGERPRINT_VALUES = new Set([
   "",
@@ -166,35 +188,49 @@ const REASON_TEXT = {
 };
 
 /**
- * 当前授权状态。返回 { ok, reason, info }
- * ok=true 时 info 含 owner / machineId / activatedAt / permanent
+ * 当前授权状态。返回 { ok, reason, enforced, info }
+ * - enforced=false 表示本版本关闭了授权校验，ok 恒为 true；
+ * - enforced=true 且 ok=true 时 info 含 owner / machineId / activatedAt / permanent。
+ * 注意：所有分支都必须带 enforced，调用方靠它区分「没校验」与「校验未通过」。
  */
 function getStatus() {
   const machineId = getMachineId();
+
+  // 开关关闭：视为始终可用，不读授权文件、不做过期与回拨判定
+  if (!isEnforced()) {
+    return {
+      ok: true,
+      enforced: false,
+      machineId,
+      info: { owner: "未启用授权校验", machineId, activatedAt: 0, permanent: true }
+    };
+  }
+
   const stored = readLicenseFile();
   if (!stored || !stored.code) {
-    return { ok: false, reason: "no-license", machineId };
+    return { ok: false, reason: "no-license", enforced: true, machineId };
   }
 
   const verified = verifySignature(stored.code);
-  if (!verified.ok) return { ok: false, reason: verified.reason, machineId };
+  if (!verified.ok) return { ok: false, reason: verified.reason, enforced: true, machineId };
   if (verified.payload.mid !== machineId) {
-    return { ok: false, reason: "machine-mismatch", machineId };
+    return { ok: false, reason: "machine-mismatch", enforced: true, machineId };
   }
   if (verified.payload.exp && Date.now() > Number(verified.payload.exp)) {
-    return { ok: false, reason: "expired", machineId };
+    return { ok: false, reason: "expired", enforced: true, machineId };
   }
 
   // 系统时间回拨检测（为按有效期授权预留；永久授权下主要防止篡改环境因素）
   const now = Date.now();
   const lastSeenAt = Number(stored.lastSeenAt || 0);
   if (lastSeenAt && now < lastSeenAt - CLOCK_SKEW_TOLERANCE_MS) {
-    return { ok: false, reason: "clock-rollback", machineId };
+    return { ok: false, reason: "clock-rollback", enforced: true, machineId };
   }
   writeLicenseFile({ ...stored, lastSeenAt: now });
 
   return {
     ok: true,
+    enforced: true,
     machineId,
     info: {
       owner: verified.payload.owner || "未署名用户",
@@ -233,6 +269,7 @@ function activate(rawCode) {
 module.exports = {
   getMachineId,
   getStatus,
+  isEnforced,
   activate,
   reasonText: (reason) => REASON_TEXT[reason] || "授权状态异常"
 };

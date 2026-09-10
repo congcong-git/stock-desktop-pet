@@ -166,12 +166,6 @@ const APP_CONFIG_FILE = "app-config.json";
 // 行情刷新间隔（秒）：管理面板可自定义，范围 3～120
 const REFRESH_SECONDS_LIMITS = [3, 120];
 const DEFAULT_REFRESH_SECONDS = 10;
-const DEFAULT_APP_CONFIG = {
-  autoLaunch: false,
-  updateCheck: true,
-  guideSeen: false,
-  refreshSeconds: DEFAULT_REFRESH_SECONDS
-};
 
 function readAppConfig() {
   const raw = readJson(APP_CONFIG_FILE, {});
@@ -438,8 +432,11 @@ function ensureDataFiles() {
 }
 
 /**
- * 读取本地 JSON：主文件损坏时优先用 .bak 备份恢复，
- * 备份也不可用时隔离损坏文件并返回默认值，保证软件可正常启动（PRD 18.3）。
+ * 读取本地 JSON。
+ * - 文件不存在：属于正常情况（首次运行、尚未落盘的配置文件如 app-config.json），
+ *   直接返回默认值，不得进入损坏恢复流程；
+ * - 主文件损坏：优先用 .bak 备份恢复，备份也不可用时隔离损坏文件并返回默认值，
+ *   保证软件可正常启动（PRD 18.3）。
  */
 function readJson(fileName, fallback) {
   ensureDataFiles();
@@ -452,6 +449,11 @@ function readJson(fileName, fallback) {
     }
     return JSON.parse(content);
   } catch (primaryError) {
+    // 文件不存在不是损坏：直接返回默认值。
+    // 否则会因 .bak 同样不存在而走到下面的分支，误报「已损坏且无法恢复」。
+    if (primaryError && primaryError.code === "ENOENT") {
+      return fallback;
+    }
     const backupPath = `${filePath}.bak`;
     try {
       const backupValue = JSON.parse(fs.readFileSync(backupPath, "utf8"));
@@ -2295,6 +2297,15 @@ let mainAppStarted = false;
 /** 授权信息弹窗（右键菜单入口） */
 function showLicenseInfo(sourceWindow) {
   const status = license.getStatus();
+  if (!status.enforced) {
+    dialog.showMessageBox(sourceWindow || null, {
+      type: "info",
+      title: "授权信息",
+      message: "当前版本未启用授权校验",
+      detail: "无需激活，启动即可使用全部功能。"
+    });
+    return;
+  }
   if (!status.ok) {
     dialog.showMessageBox(sourceWindow || null, {
       type: "warning",
@@ -2388,8 +2399,13 @@ function startLicenseWatchdog() {
 
 app.whenReady().then(() => {
   const licenseStatus = license.getStatus();
+  const licenseState = !licenseStatus.enforced
+    ? "disabled"
+    : licenseStatus.ok
+      ? "activated"
+      : "missing";
   console.log(
-    `[niulai] start v${app.getVersion()} ${new Date().toLocaleTimeString()} license=${licenseStatus.ok ? "activated" : "missing"}`
+    `[niulai] start v${app.getVersion()} ${new Date().toLocaleTimeString()} license=${licenseState}`
   );
   ensureDataFiles();
   if (licenseStatus.ok) {
