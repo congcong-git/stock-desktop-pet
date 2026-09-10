@@ -1,5 +1,9 @@
 node_modules/
 release/
+dist/
+
+# 授权签发私钥与台账（绝不入库）
+keys/
 
 # 打包时下载的二进制缓存（改用独立目录，避免污染 %LOCALAPPDATA%）
 .cache/
