@@ -1,6 +1,6 @@
 {
   "name": "niulai-desktop-pet",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "股票桌宠",
   "author": "xuniwodecong",
   "main": "electron/main.js",

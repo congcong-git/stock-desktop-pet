@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("stockWatcher", {
   getBootstrap: () => ipcRenderer.invoke("app:get-bootstrap"),
   searchStocks: (keyword) => ipcRenderer.invoke("stocks:search", keyword),
+  getAnalysis: (stock, opts) => ipcRenderer.invoke("analysis:get", stock, opts),
+  rankAnalysis: (stocks) => ipcRenderer.invoke("analysis:rank", stocks),
   addWatchlist: (stock) => ipcRenderer.invoke("watchlist:add", stock),
   saveHolding: (payload) => ipcRenderer.invoke("holding:save", payload),
   updateHolding: (payload) => ipcRenderer.invoke("holding:update", payload),

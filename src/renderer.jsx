@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import AnalysisView from "./analysis.jsx";
 
 function classNames(...values) {
   return values.filter(Boolean).join(" ");
@@ -279,7 +280,8 @@ function App() {
   const [appConfig, setAppConfig] = useState(null);
   const [guideOpen, setGuideOpen] = useState(false);
   const [guideAutoLaunch, setGuideAutoLaunch] = useState(false);
-  const [activeTable, setActiveTable] = useState("watch"); // 搜索 / 自选股 / 持仓股 分栏
+  const [activeTable, setActiveTable] = useState("watch"); // 搜索 / 自选股 / 持仓股 / 分析 分栏
+  const [analysisStock, setAnalysisStock] = useState(null); // 当前被分析股票
   const [snapshotFlash, setSnapshotFlash] = useState(false); // 快照区高亮提示
   const [intervalDraft, setIntervalDraft] = useState("10"); // 刷新间隔输入框草稿
   const searchInputRef = useRef(null);
@@ -578,6 +580,13 @@ function App() {
     }
   }
 
+  // 打开分析页：记录被分析股票并切换到「分析」分栏
+  function openAnalysis(stock) {
+    if (!stock || !stock.code) return;
+    setAnalysisStock({ code: stock.code, name: stock.name, market: stock.market });
+    setActiveTable("analysis");
+  }
+
   // 刷新间隔：越界自动收敛到 3～120 秒，保存后主进程会广播给所有窗口
   async function applyRefreshSeconds(seconds) {
     const [min, max] = REFRESH_LIMITS;
@@ -650,7 +659,7 @@ function App() {
         </div>
       </div>
 
-      <div className="main-row">
+      <div className={classNames("main-row", activeTable === "analysis" && "is-analysis")}>
         <section className="card list-card">
           <div className="section-title">
             <div className="segmented">
@@ -675,11 +684,25 @@ function App() {
               >
                 持仓股 <em>{holdingCount}</em>
               </button>
+              <button
+                type="button"
+                className={classNames(activeTable === "analysis" && "active")}
+                onClick={() => setActiveTable("analysis")}
+              >
+                分析
+              </button>
             </div>
             <span className="section-hint">{LIST_HINTS[activeTable]}</span>
           </div>
 
-          {activeTable === "search" ? (
+          {activeTable === "analysis" ? (
+            <AnalysisView
+              stock={analysisStock}
+              watchlist={watchlist}
+              holdings={holdings}
+              onPickStock={openAnalysis}
+            />
+          ) : activeTable === "search" ? (
             <>
               <div className="search-bar">
                 <span className="search-icon">
@@ -762,6 +785,9 @@ function App() {
                                 <button className="primary-btn" onClick={() => openAddHoldingModal(item)}>
                                   {inHoldings ? "修改持仓" : "加入持仓"}
                                 </button>
+                                <button className="ghost-btn" onClick={() => openAnalysis(item)}>
+                                  分析
+                                </button>
                               </div>
                             </td>
                           </tr>
@@ -809,9 +835,14 @@ function App() {
                         </td>
                         <td className={classNames("status-text", row.error && "stale-text")}>{row.error || "正常"}</td>
                         <td>
-                          <button className="danger-btn" onClick={() => handleRemoveWatchlist(row)}>
-                            删除
-                          </button>
+                          <div className="action-group">
+                            <button className="ghost-btn" onClick={() => openAnalysis(row)}>
+                              分析
+                            </button>
+                            <button className="danger-btn" onClick={() => handleRemoveWatchlist(row)}>
+                              删除
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -859,6 +890,9 @@ function App() {
                         <td className={getValueTone(row.dailyProfit)}>{formatCurrency(row.dailyProfit)}</td>
                         <td>
                           <div className="action-group">
+                            <button className="ghost-btn" onClick={() => openAnalysis(row)}>
+                              分析
+                            </button>
                             <button className="ghost-btn" onClick={() => openEditHoldingModal(row)}>
                               编辑
                             </button>
@@ -876,7 +910,8 @@ function App() {
           ) : null}
         </section>
 
-        <aside className="card summary-card">
+        {activeTable !== "analysis" && (
+          <aside className="card summary-card">
           <div className="section-title">
             <h2>今日盈亏</h2>
             <div className={classNames("profit-status", themeClass)}>{marketState.profitStatus}</div>
@@ -956,7 +991,8 @@ function App() {
             </div>
           </div>
         </aside>
-      </div>
+          )}
+        </div>
 
       {holdingModalOpen ? (
         <div className="modal-backdrop">

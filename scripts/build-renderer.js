@@ -12,6 +12,7 @@ const CSS_FILES = [
   ["pet.css", "pet.css"],
   ["media.css", "media.css"],
   ["activate.css", "activate.css"],
+  ["analysis.css", "analysis.css"],
   ["license-admin.css", "license-admin.css"]
 ];
 

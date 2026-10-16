@@ -20,6 +20,7 @@ const zlib = require("zlib");
 const iconv = require("iconv-lite");
 const { autoUpdater } = require("electron-updater");
 const license = require("./license");
+const analysisEngine = require("./analysis");
 
 // 与 package.json build.appId 保持一致：修复 Windows 任务栏按钮分组丢失
 app.setAppUserModelId("com.trae.stockwatcher");
@@ -763,6 +764,239 @@ async function fetchQuotes(stocks) {
   });
 
   return quotes;
+}
+
+// —— 历史 K 线数据层（分析功能依赖）——
+// 复用 requestText（主进程 Node 抓取，规避浏览器 CORS），以免费公开接口为主、备援为辅，
+// 带内存缓存与单请求去重，避免高频触发公开接口限流。
+const klineCache = new Map();
+const klineInflight = new Map();
+const KLINE_TTL = { day: 10 * 60 * 1000, "60m": 60 * 1000, "30m": 60 * 1000, "5m": 60 * 1000 };
+// 因子分析基本面/资金面缓存：降低东方财富公开接口调用频率，避免限流
+const fundamentalsCache = new Map();
+const FUND_TTL = 10 * 60 * 1000;
+async function fetchFundamentalsCached(market, code, force) {
+  const key = `${market}.${code}`;
+  if (!force) {
+    const cached = fundamentalsCache.get(key);
+    if (cached && cached.expireAt > Date.now()) return cached.data;
+  }
+  const data = await fetchFundamentals(market, code);
+  fundamentalsCache.set(key, { data, expireAt: Date.now() + FUND_TTL });
+  return data;
+}
+const EAST_KLT = { day: 101, "60m": 60, "30m": 30, "5m": 5 };
+const TENCENT_KLT = { day: "day", "60m": "m60", "30m": "m30", "5m": "m5" };
+
+function eastSecid(market, code) {
+  // 东财 secid：上交所=1，深/北交所=0
+  const prefix = market === "sh" ? 1 : 0;
+  return `${prefix}.${code}`;
+}
+
+function parseEastKline(text) {
+  const json = JSON.parse(text);
+  const arr = json && json.data && json.data.klines;
+  if (!Array.isArray(arr)) return null;
+  return arr
+    .map((line) => {
+      const p = line.split(",");
+      return { date: p[0], open: +p[1], close: +p[2], high: +p[3], low: +p[4], volume: +p[5] };
+    })
+    .filter((b) => b.high >= b.low && b.open > 0 && b.close > 0);
+}
+
+function parseTencentKline(text) {
+  const eq = text.indexOf("=");
+  if (eq < 0) return null;
+  const json = JSON.parse(text.slice(eq + 1));
+  const data = json && json.data;
+  if (!data) return null;
+  const key = Object.keys(data)[0];
+  const node = data[key] || {};
+  const arr = node.qfqday || node.day || node.m60 || node.m30 || node.m5;
+  if (!Array.isArray(arr)) return null;
+  return arr
+    .map((p) => ({ date: p[0], open: +p[1], close: +p[2], high: +p[3], low: +p[4], volume: +p[5] }))
+    .filter((b) => b.high >= b.low && b.open > 0 && b.close > 0);
+}
+
+async function fetchKlineOnce(market, code, period) {
+  // 主源：东方财富历史 K 线（UTF-8 JSON，前复权）
+  const secid = eastSecid(market, code);
+  const eastUrl =
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?fields1=f1,f2,f3,f4,f5,f6` +
+    `&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=${EAST_KLT[period]}` +
+    `&secid=${secid}&end=20500101&lmt=${period === "day" ? 400 : 500}&fqt=1` +
+    `&ut=fa5fd1943c7b386f172d6893dbfba10b`;
+  try {
+    const text = await requestText(eastUrl);
+    const bars = parseEastKline(text);
+    if (bars && bars.length) return bars;
+  } catch (_error) {
+    // 主源失败，尝试备援
+  }
+  // 备援：腾讯 K 线
+  const tUrl =
+    `https://web.ifzq.gtimg.cn/appstuff/app/kline/query?param=${market}${code},${TENCENT_KLT[period]},,${period === "day" ? 400 : 500},qfq`;
+  const tBars = parseTencentKline(await requestText(tUrl));
+  if (tBars && tBars.length) return tBars;
+  throw new Error(`K 线获取失败（${market}${code} ${period}）`);
+}
+
+async function fetchKline(market, code, period, force) {
+  const key = `${market}.${code}.${period}`;
+  const cached = klineCache.get(key);
+  const now = Date.now();
+  if (!force && cached && cached.expireAt > now) {
+    return cached.data;
+  }
+  if (klineInflight.has(key)) {
+    return klineInflight.get(key);
+  }
+  const promise = (async () => {
+    try {
+      const data = await fetchKlineOnce(market, code, period);
+      klineCache.set(key, { data, expireAt: now + (KLINE_TTL[period] || 60000) });
+      return data;
+    } finally {
+      klineInflight.delete(key);
+    }
+  })();
+  klineInflight.set(key, promise);
+  return promise;
+}
+
+// ——— 因子分析：基本面 / 资金面数据抓取 ———
+// 全部走免费公开接口，单接口失败不影响其余字段（每个子抓取独立 try/catch）。
+// 数据用途：价值+质量、PEAD、低波动/规模、资金面等因子。仅供研究参考。
+
+// 东方财富 push2 个股快照：估值/市值/行业/股息率
+async function fetchEastSnapshot(secid) {
+  const url =
+    "https://push2.eastmoney.com/api/qt/stock/get?ut=fa5fd1943c7b386f172d6893dbfba10b" +
+    `&secid=${secid}&fields=f9,f23,f116,f117,f162,f164,f167`;
+  const text = await requestText(url);
+  const json = JSON.parse(text);
+  const d = (json && json.data) || {};
+  return {
+    peTTM: d.f9 != null ? Number(d.f9) : null,
+    pb: d.f23 != null ? Number(d.f23) : null,
+    totalMarketCap: d.f116 != null ? Number(d.f116) : null, // 元
+    floatMarketCap: d.f117 != null ? Number(d.f117) : null, // 元
+    industry: d.f162 || null,
+    dividendYield: d.f164 != null ? Number(d.f164) : null, // % (TTM)
+    listDate: d.f167 || null
+  };
+}
+
+// 东方财富数据中心：业绩报表（ROE / 净利润增速 / EPS / 报告期）
+async function fetchEarnings(code) {
+  const url =
+    "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DMSK_FNIM" +
+    "&columns=SECURITY_CODE,SECURITY_NAME_ABBR,REPORT_DATE,EPSJB,BPS,PARENT_NETPROFIT,PARENT_NETPROFIT_YOY,WEIGHTAVG_ROE" +
+    `&filter=(SECURITY_CODE%3D%22${code}%22)&sortColumns=REPORT_DATE&sortTypes=-1&pageSize=8&source=WEB&client=WEB`;
+  const text = await requestText(url);
+  const json = JSON.parse(text);
+  const rows = (((json || {}).result || {}).data) || [];
+  if (!rows.length) return [];
+  return rows.map((r) => ({
+    reportDate: r.REPORT_DATE ? String(r.REPORT_DATE).slice(0, 10) : null,
+    eps: r.EPSJB != null ? Number(r.EPSJB) : null,
+    netProfit: r.PARENT_NETPROFIT != null ? Number(r.PARENT_NETPROFIT) : null,
+    yoyGrowth: r.PARENT_NETPROFIT_YOY != null ? Number(r.PARENT_NETPROFIT_YOY) : null, // %
+    roe: r.WEIGHTAVG_ROE != null ? Number(r.WEIGHTAVG_ROE) : null // %
+  }));
+}
+
+// 东方财富数据中心：现金流量表（经营现金流净额）
+async function fetchCashFlow(code) {
+  const url =
+    "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DMSK_XJLL" +
+    "&columns=SECURITY_CODE,SECURITY_NAME_ABBR,REPORT_DATE,OPERATE_CASH_FLOW" +
+    `&filter=(SECURITY_CODE%3D%22${code}%22)&sortColumns=REPORT_DATE&sortTypes=-1&pageSize=8&source=WEB&client=WEB`;
+  const text = await requestText(url);
+  const json = JSON.parse(text);
+  const rows = (((json || {}).result || {}).data) || [];
+  return rows
+    .map((r) => ({
+      reportDate: r.REPORT_DATE ? String(r.REPORT_DATE).slice(0, 10) : null,
+      cfo: r.OPERATE_CASH_FLOW != null ? Number(r.OPERATE_CASH_FLOW) : null // 元
+    }))
+    .filter((r) => r.reportDate && r.cfo != null);
+}
+
+// 东方财富 push2：主力资金流日线（近 30 日）
+async function fetchCapitalFlow(secid) {
+  const url =
+    "https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?lmt=30&klt=101&ut=fa5fd1943c7b386f172d6893dbfba10b" +
+    `&secid=${secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65`;
+  const text = await requestText(url);
+  const json = JSON.parse(text);
+  const raw = (((json || {}).data || {}).data) || [];
+  const days = raw
+    .map((line) => {
+      const p = String(line).split(",");
+      return {
+        date: p[0] ? String(p[0]).slice(0, 10) : null,
+        mainNetIn: p[1] != null ? Number(p[1]) : null // 元
+      };
+    })
+    .filter((d) => d.date && Number.isFinite(d.mainNetIn));
+  return { days };
+}
+
+// 汇总为因子引擎所需的标准结构；任一子抓取失败仅缺失对应字段
+async function fetchFundamentals(market, code) {
+  const secid = eastSecid(market, code);
+  const result = {
+    valuation: {},
+    quality: {},
+    earnings: [],
+    capitalFlow: { days: [] },
+    industry: {}
+  };
+
+  const [snap, earnings, flow] = await Promise.all([
+    fetchEastSnapshot(secid).catch(() => null),
+    fetchEarnings(code).catch(() => []),
+    fetchCapitalFlow(secid).catch(() => ({ days: [] }))
+  ]);
+
+  if (snap) {
+    result.valuation = {
+      peTTM: snap.peTTM,
+      pb: snap.pb,
+      totalMarketCap: snap.totalMarketCap,
+      floatMarketCap: snap.floatMarketCap,
+      pcf: null, // 市现率需现金流数据，下面计算
+      dividendYield: snap.dividendYield
+    };
+    result.industry = { name: snap.industry };
+  }
+
+  if (earnings && earnings.length) {
+    result.earnings = earnings;
+    const roeSeries = earnings.map((e) => e.roe).filter((x) => x != null);
+    result.quality.roe = roeSeries.length ? roeSeries[0] : null; // 最新一期
+    result.quality.roeSeries = roeSeries;
+  }
+
+  // 现金流：取与最新业绩报告期匹配的经营现金流，算「经营现金流/净利润」
+  if (snap && earnings) {
+    const cfs = await fetchCashFlow(code).catch(() => []);
+    if (cfs.length && earnings.length) {
+      const latestDate = earnings[0].reportDate;
+      const match = cfs.find((c) => c.reportDate === latestDate) || cfs[0];
+      const netProfit = earnings[0].netProfit;
+      if (match.cfo != null && netProfit) {
+        result.quality.cfoToProfit = match.cfo / Math.abs(netProfit);
+      }
+    }
+  }
+
+  result.capitalFlow = flow || { days: [] };
+  return result;
 }
 
 function buildDisplayRows(watchlist, holdings, quotes, previousQuotes) {
@@ -2012,6 +2246,87 @@ ipcMain.handle("notify:alert", (_event, payload) => {
 ipcMain.handle("stocks:search", async (_, keyword) => {
   const results = await searchStocks(keyword);
   rememberStocks(results);
+  return results;
+});
+
+// 买卖点分析：并行抓取多周期 K 线（缓存优先）→ 运行三方法引擎 → 返回统一结构
+ipcMain.handle("analysis:get", async (_event, stock, opts) => {
+  const code = String((stock && stock.code) || "").trim();
+  const market = String((stock && stock.market) || inferMarketFromCode(code)).trim();
+  const force = !!(opts && opts.force);
+  if (!code) {
+    throw new Error("缺少股票代码");
+  }
+
+  const klines = {};
+  // 日线为必需项：失败直接抛错，由渲染层降级显示
+  klines.day = await fetchKline(market, code, "day", force);
+  await Promise.all(
+    ["60m", "30m", "5m"].map(async (period) => {
+      try {
+        klines[period] = await fetchKline(market, code, period, force);
+      } catch (_error) {
+        klines[period] = [];
+      }
+    })
+  );
+
+  const fundamentals = await fetchFundamentalsCached(market, code, force).catch(() => null);
+  const analysis = analysisEngine.analyze(klines, { code, name: stock && stock.name, market }, fundamentals);
+  return {
+    stock: { code, name: stock && stock.name, market },
+    klines,
+    analysis
+  };
+});
+
+// 因子排行：对一批股票（自选+持仓）批量计算六因子综合分并排序
+ipcMain.handle("analysis:rank", async (_event, stocks) => {
+  if (!Array.isArray(stocks) || !stocks.length) return [];
+  const list = stocks
+    .map((s) => {
+      const code = String((s && s.code) || "").trim();
+      const market = String((s && s.market) || inferMarketFromCode(code)).trim();
+      return { code, market, name: (s && s.name) || code };
+    })
+    .filter((s) => s.code);
+
+  const results = await Promise.all(
+    list.map(async (s) => {
+      try {
+        const [day, fundamentals] = await Promise.all([
+          fetchKline(s.market, s.code, "day", false).catch(() => []),
+          fetchFundamentalsCached(s.market, s.code, false).catch(() => null)
+        ]);
+        const analysis = analysisEngine.analyze({ day }, { code: s.code, name: s.name, market: s.market }, fundamentals);
+        const factors = (analysis && analysis.factors) || null;
+        const verdict = (factors && factors.verdict) || {};
+        const factorScores = (factors && factors.list
+          ? factors.list.map((f) => ({ key: f.key, name: f.name, score: f.score, tone: f.tone }))
+          : []
+        ).filter((f) => f.score != null);
+        return {
+          code: s.code,
+          market: s.market,
+          name: s.name,
+          score: verdict.avg != null ? verdict.avg : null,
+          tone: verdict.tone || "flat",
+          title: verdict.title || "",
+          factorScores
+        };
+      } catch (_error) {
+        return { code: s.code, market: s.market, name: s.name, score: null, tone: "flat", title: "数据不足", factorScores: [] };
+      }
+    })
+  );
+
+  // 按综合分降序，缺失值排到末尾
+  results.sort((a, b) => {
+    if (a.score == null && b.score == null) return 0;
+    if (a.score == null) return 1;
+    if (b.score == null) return -1;
+    return b.score - a.score;
+  });
   return results;
 });
 
