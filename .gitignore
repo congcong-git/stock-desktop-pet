@@ -7,3 +7,6 @@ keys/
 
 # 打包时下载的二进制缓存（改用独立目录，避免污染 %LOCALAPPDATA%）
 .cache/
+
+# 项目相关数据（非缓存，勿入库）
+.codebuddy/
